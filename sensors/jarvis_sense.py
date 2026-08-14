@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import deque
+from difflib import SequenceMatcher
 import io
 import json
 import os
@@ -65,6 +67,41 @@ def clean_text(value: Any, limit: int = 360) -> str:
     text = str(value or "").replace("\x00", " ")
     text = re.sub(r"\s+", " ", text).strip()
     return text[:limit]
+
+
+def strip_recent_tts_echo(heard: str, spoken: str, finished_at: float, now: float | None = None) -> str:
+    """Reject a recent TTS echo and salvage a real suffix without storing audio."""
+    text = clean_text(heard, 240)
+    if not text or not spoken or finished_at <= 0:
+        return text
+    current = time.monotonic() if now is None else now
+    if current - finished_at < 0 or current - finished_at > 3.0:
+        return text
+    aliases = {
+        "youtube": "ютуб", "jarvis": "джарвис", "discord": "дискорд",
+        "chrome": "хром", "steam": "стим",
+    }
+    heard_words = [aliases.get(word, word) for word in re.findall(r"[\w]+", text.casefold(), re.UNICODE)]
+    spoken_words = [
+        aliases.get(word, word)
+        for word in re.findall(r"[\w]+", clean_text(spoken, 600).casefold(), re.UNICODE)
+    ]
+    if not heard_words or not spoken_words:
+        return text
+    heard_normal = " ".join(heard_words)
+    spoken_normal = " ".join(spoken_words)
+    similarity = SequenceMatcher(None, heard_normal, spoken_normal).ratio()
+    if heard_normal in spoken_normal or similarity >= 0.82:
+        return ""
+    max_prefix = min(len(heard_words) - 1, len(spoken_words), 18)
+    for size in range(max_prefix, 2, -1):
+        prefix = " ".join(heard_words[:size])
+        for offset in range(max(0, len(spoken_words) - 24), len(spoken_words) - size + 1):
+            candidate = " ".join(spoken_words[offset:offset + size])
+            if SequenceMatcher(None, prefix, candidate).ratio() >= 0.80:
+                suffix = " ".join(heard_words[size:]).strip()
+                return suffix if len(suffix.split()) >= 2 else ""
+    return text
 
 
 def normalize_microphone_device(value: Any) -> int | None:
@@ -295,6 +332,8 @@ class Speaker:
         self._neural_model: Any = None
         self._neural_disabled = False
         self._engine = "pending"
+        self._last_message = ""
+        self._last_finished_at = 0.0
         self._thread = threading.Thread(target=self._run, name="JarvisSenseTts", daemon=True)
         self._thread.start()
 
@@ -305,6 +344,14 @@ class Speaker:
     @property
     def engine(self) -> str:
         return self._engine
+
+    @property
+    def last_message(self) -> str:
+        return self._last_message
+
+    @property
+    def last_finished_at(self) -> float:
+        return self._last_finished_at
 
     def say(self, text: str, low_priority: bool = False) -> threading.Event | None:
         message = clean_text(text, 320)
@@ -358,6 +405,8 @@ class Speaker:
                 pass
             finally:
                 self._speaking.clear()
+                self._last_message = message
+                self._last_finished_at = time.monotonic()
                 completion.set()
                 time.sleep(0.45)
 
@@ -544,6 +593,9 @@ class VoiceWorker:
         self._microphone_level_at = 0.0
         self._next_auto_device_check = 0.0
         self._awaiting_until = 0.0
+        self._awaiting_context = ""
+        self._hot_until = 0.0
+        self._ambient: deque[tuple[float, str]] = deque(maxlen=8)
         self._pending_action: dict[str, Any] | None = None
         self._pending_until = 0.0
         self._thread = threading.Thread(target=self._run, name="JarvisSenseVoice", daemon=True)
@@ -733,10 +785,28 @@ class VoiceWorker:
                 self._stop_stream()
                 self.stop_event.wait(3.0)
 
+    def _ambient_context(self, now: float) -> str:
+        while self._ambient and now - self._ambient[0][0] > 45.0:
+            self._ambient.popleft()
+        return "\n".join(item[1] for item in list(self._ambient)[-4:])
+
+    def _remember_ambient(self, transcript: str, now: float) -> None:
+        text = clean_text(transcript, 180)
+        if text:
+            self._ambient.append((now, text))
+
     def _handle_transcript(self, transcript: str) -> None:
         if self.speaker.speaking or self._busy:
             return
         now = time.monotonic()
+        transcript = strip_recent_tts_echo(
+            transcript,
+            self.speaker.last_message,
+            self.speaker.last_finished_at,
+            now,
+        )
+        if not transcript:
+            return
         if self._pending_action is not None:
             if now >= self._pending_until:
                 self._pending_action = None
@@ -759,22 +829,35 @@ class VoiceWorker:
 
         wake = WAKE_PATTERN.search(transcript)
         if wake:
-            remainder = transcript[wake.end():].strip(" ,.!?:;-")
+            self._hot_until = 0.0
+            context = self._ambient_context(now)
+            self._ambient.clear()
+            remainder = (transcript[:wake.start()] + " " + transcript[wake.end():]).strip(" ,.!?:;-")
             if remainder:
-                self._run_async(self._send_command, remainder)
+                self._run_async(self._send_command, remainder, context, False)
             else:
                 self._awaiting_until = now + 9.0
-                # Do not speak an acknowledgement here: while Windows SAPI is
-                # talking, _on_audio deliberately drops microphone frames to
-                # avoid feedback. A person who pauses after the wake word
-                # would otherwise lose their following command.
+                self._awaiting_context = context
+                # Silence preserves the next microphone frames after a standalone wake word.
                 self.store.update_status(voice="awaiting-command", voiceError="")
             return
 
         if now < self._awaiting_until:
             self._awaiting_until = 0.0
-            self._run_async(self._send_command, transcript)
+            context = self._awaiting_context or self._ambient_context(now)
+            self._awaiting_context = ""
+            self._ambient.clear()
+            self._run_async(self._send_command, transcript, context, False)
+            return
 
+        if now < self._hot_until:
+            self._hot_until = 0.0
+            context = self._ambient_context(now)
+            self._ambient.clear()
+            self._run_async(self._send_command, transcript, context, True)
+            return
+
+        self._remember_ambient(transcript, now)
     def _run_async(self, callback: Any, *args: Any) -> None:
         if self._busy:
             return
@@ -795,10 +878,24 @@ class VoiceWorker:
 
         threading.Thread(target=work, name="JarvisSenseVoiceCommand", daemon=True).start()
 
-    def _send_command(self, command: str) -> None:
+    def _speak_reply_with_hot_window(self, reply: str) -> None:
+        completion = self.speaker.say(reply)
+        if completion is not None and completion.wait(90.0):
+            self._hot_until = time.monotonic() + 8.0
+            self.store.update_status(activity="hot-followup")
+
+    def _send_command(self, command: str, ambient_context: str = "", hot_followup: bool = False) -> None:
         display_command = clean_text(command, 160)
         self.store.update_status(activity="processing", lastCommand=display_command, lastReply="")
-        response = post_json(LOCAL_JARVIS + "/api/chat", {"message": command}, timeout=75)
+        response = post_json(
+            LOCAL_JARVIS + "/api/chat",
+            {
+                "message": command,
+                "ambientContext": clean_text(ambient_context, 700),
+                "hotFollowup": hot_followup is True,
+            },
+            timeout=150,
+        )
         action = response.get("action")
         reply = clean_text(response.get("reply"), 1200)
         if isinstance(action, dict) and clean_text(action.get("token"), 80):
@@ -813,13 +910,13 @@ class VoiceWorker:
                     "y": raw_target["y"],
                     "label": clean_text(raw_target.get("label"), 100) or "СЮДА",
                 }
-            prompt = "Есть действие: " + label + ". Скажи подтверждаю или отмена в течение тридцати секунд."
+            prompt = "Есть действие: " + label + ". Ответь утвердительно или скажи отмена в течение тридцати секунд."
             self.store.update_status(activity="awaiting-confirmation", lastReply=prompt, actionTarget=safe_target, actionLabel=label)
             self.speaker.say(prompt)
             return
         if reply:
             self.store.update_status(activity="responding", lastReply=reply, actionTarget=None, actionLabel="")
-            self.speaker.say(reply)
+            self._speak_reply_with_hot_window(reply)
 
     def _execute_pending(self, action: dict[str, Any]) -> None:
         token = clean_text(action.get("token"), 100)
@@ -830,7 +927,7 @@ class VoiceWorker:
         if response.get("ok") is not True or not message:
             raise RuntimeError(clean_text(response.get("error"), 180) or "Ядро не подтвердило действие.")
         self.store.update_status(activity="responding", lastReply=message, actionTarget=None, actionLabel="")
-        self.speaker.say(message)
+        self._speak_reply_with_hot_window(message)
 
 
 class VisionWorker:

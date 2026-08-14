@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { contextualUserMessage, passiveHotFollowup, redactSensitiveText, sanitizeAmbientContext } from './conversation-intelligence.mjs';
 import { Poe2BuildCoach, buildCoachContext, buildPoe2CoachVisionPrompt, fetchPoe2BuildSource, groundedPoe2Pointer, inferPoe2Patch, looksLikePoe2BuildUrl, poe2CoachIntent, sanitisePoe2Build } from './poe2-build-coach.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -229,19 +230,19 @@ async function boot() {
 }
 
 async function logEvent(type, message) {
-  state.events.push({ id: randomUUID(), type, message: clean(message, 280), at: new Date().toISOString() });
+  state.events.push({ id: randomUUID(), type, message: redactSensitiveText(message, 280), at: new Date().toISOString() });
   state.events = state.events.slice(-160);
   await writeJson(FILES.events, state.events);
 }
 
 async function saveConversation(role, text) {
-  state.conversations.push({ id: randomUUID(), role, text: clean(text, 1800), at: new Date().toISOString() });
+  state.conversations.push({ id: randomUUID(), role, text: redactSensitiveText(text, 1800), at: new Date().toISOString() });
   state.conversations = state.conversations.slice(-240);
   await writeJson(FILES.conversations, state.conversations);
 }
 
 async function remember(text, kind = 'note') {
-  const item = { id: randomUUID(), text: clean(text, 600), kind: clean(kind, 24), at: new Date().toISOString() };
+  const item = { id: randomUUID(), text: redactSensitiveText(text, 600), kind: clean(kind, 24), at: new Date().toISOString() };
   state.memories.push(item);
   state.memories = state.memories.slice(-120);
   await writeJson(FILES.memories, state.memories);
@@ -250,7 +251,7 @@ async function remember(text, kind = 'note') {
 }
 
 async function rememberFact(text, kind = 'fact') {
-  const factText = clean(text, 600);
+  const factText = redactSensitiveText(text, 600);
   if (!factText || state.profile.facts.some((fact) => fact.text.toLocaleLowerCase('ru-RU') === factText.toLocaleLowerCase('ru-RU'))) return;
   state.profile.facts.push({ id: randomUUID(), text: factText, kind, at: new Date().toISOString() });
   state.profile.facts = state.profile.facts.slice(-100);
@@ -782,13 +783,14 @@ function localReply(message, operation) {
 async function applyDirect(operation) {
   if (operation.kind === 'remember') await remember(operation.text);
   if (operation.kind === 'task') {
-    state.tasks.push({ id: randomUUID(), title: operation.text, done: false, createdAt: new Date().toISOString() });
+    const safeTask = redactSensitiveText(operation.text, 600);
+    state.tasks.push({ id: randomUUID(), title: safeTask, done: false, createdAt: new Date().toISOString() });
     state.tasks = state.tasks.slice(-120);
     await writeJson(FILES.tasks, state.tasks);
-    await logEvent('task_added', `Задача: ${operation.text}`);
+    await logEvent('task_added', `Задача: ${safeTask}`);
   }
   if (operation.kind === 'set_name') {
-    state.profile.name = operation.name;
+    state.profile.name = redactSensitiveText(operation.name, 80);
     state.profile.updatedAt = new Date().toISOString();
     await writeJson(FILES.profile, state.profile);
     await logEvent('profile_saved', `Имя пользователя: ${operation.name}`);
@@ -957,10 +959,19 @@ async function execute(operation) {
   throw new Error('Неподдерживаемое действие.');
 }
 
-async function chat(message) {
+async function chat(message, voiceContext = {}) {
+  const ambientContext = sanitizeAmbientContext(voiceContext.ambientContext);
+  const hotFollowup = voiceContext.hotFollowup === true;
+  const brainMessage = contextualUserMessage(message, ambientContext);
   let operation = classify(message);
   if (operation.kind === 'chat' && looksLikeTaskRequest(message) && !looksLikeAdviceRequest(message)) {
     operation = await planLocalTask(message) || operation;
+  }
+  if (hotFollowup && !passiveHotFollowup(operation.kind)) {
+    operation = {
+      kind: 'clarify',
+      question: 'Для управления компьютером снова скажи «Джарвис» и повтори действие. Короткие вопросы после моего ответа можно задавать без кодового слова.',
+    };
   }
   let visionReply = null;
   if (operation.kind === 'vision' || operation.kind === 'poe2_coach') {
@@ -1067,17 +1078,17 @@ async function chat(message) {
       reply = `${streetPrefix()} команду не разобрал и ничего не выполнял. Назови действие и цель чуть точнее — без вранья разберусь.`;
     } else if (looksLikeAdviceRequest(message)) {
       const advicePrompt = [
-        'Запрос пользователя: ' + clean(message, 500),
+        'Запрос пользователя: ' + clean(brainMessage, 900),
         'Это просьба о совете или диагностике, а не команда управления компьютером.',
         'Ответь по-русски как умный добрый друг: сразу дай 2–4 наиболее вероятные причины и первый безопасный шаг проверки.',
         'Не ограничивайся встречным вопросом. В конце можешь задать один конкретный уточняющий вопрос. Не заявляй, что что-либо сделал на ПК.',
       ].join('\n');
       reply = await askBrain(advicePrompt, 360, false);
     } else {
-      reply = await askBrain(message);
+      reply = await askBrain(brainMessage);
       if (reply && (isLegacyTemplateTurn({ role: 'assistant', text: reply }) || hasUnconfirmedActionClaim(reply))) {
         const retryPrompt = [
-          'Последняя реплика пользователя: ' + clean(message, 400),
+          'Последняя реплика пользователя и разговорный контекст: ' + clean(brainMessage, 900),
           'Это обычный разговор, а не команда управления компьютером.',
           'Ответь только на последнюю реплику живо, кратко и по-русски. Не продолжай старые поручения, не обещай и не заявляй никаких действий на ПК.',
         ].join('\n');
@@ -1150,7 +1161,10 @@ async function handle(request, response) {
     if (request.method === 'POST' && url.pathname === '/api/chat') {
       const payload = await bodyOf(request); const message = clean(payload.message, 1200);
       if (!message) return json(response, 400, { error: 'Скажи или напиши команду.' });
-      return json(response, 200, await chat(message));
+      return json(response, 200, await chat(message, {
+        ambientContext: sanitizeAmbientContext(payload.ambientContext),
+        hotFollowup: payload.hotFollowup === true,
+      }));
     }
     if (request.method === 'POST' && url.pathname === '/api/actions/execute') {
       const payload = await bodyOf(request); const token = clean(payload.token, 100); const item = pending.get(token);
