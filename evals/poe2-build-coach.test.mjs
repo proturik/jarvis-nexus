@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  Poe2BuildCoach, buildCoachContext, extractBuildPageText, fetchPoe2BuildSource, inferPoe2Patch,
-  looksLikePoe2BuildUrl, sanitisePoe2Build, validatePoe2BuildUrl,
+  Poe2BuildCoach, buildCoachContext, buildPoe2CoachVisionPrompt, extractBuildPageText, fetchPoe2BuildSource, groundedPoe2Pointer, inferPoe2Patch,
+  looksLikePoe2BuildUrl, poe2CoachIntent, sanitisePoe2Build, validatePoe2BuildUrl,
 } from '../poe2-build-coach.mjs';
 
 const publicResolver = async () => [{ address: '142.250.74.206', family: 4 }];
@@ -75,4 +75,30 @@ test('sanitiser limits imported model output', () => {
   const build = sanitisePoe2Build({ title: 'x'.repeat(500), keyStats: Array.from({ length: 100 }, (_, index) => `stat-${index}`) }, 'https://pobb.in/example');
   assert.equal(build.title.length, 140);
   assert.equal(build.keyStats.length, 20);
+});
+
+test('senior-brother coach intent stays scoped and produces grounded guidance', () => {
+  assert.deepEqual(poe2CoachIntent('проверь экран и скажи что менять по билду', true), {
+    request: 'проверь экран и скажи что менять по билду', allowPointer: false,
+  });
+  assert.equal(poe2CoachIntent('покажи куда нажать чтобы прокачать дальше', true)?.allowPointer, true);
+  assert.equal(poe2CoachIntent('покажи куда нажать чтобы прокачать дальше', false), null);
+  assert.equal(poe2CoachIntent('как дела', true), null);
+
+  const build = sanitisePoe2Build({
+    title: 'Ice Shot Deadeye', className: 'Ranger', ascendancy: 'Deadeye', mainSkill: 'Ice Shot',
+    gearPriorities: ['Cold damage', 'Evasion'], skillLinks: ['Ice Shot + Cold Infusion'],
+  }, 'https://mobalytics.gg/poe-2/builds/ice-shot');
+  const prompt = buildPoe2CoachVisionPrompt(build, 'ткни куда нажать', true);
+  assert.match(prompt, /СТАРШИЙ БРАТ/u);
+  assert.match(prompt, /Ice Shot \+ Cold Infusion/u);
+  assert.match(prompt, /ПОЧЕМУ/u);
+  assert.match(prompt, /отдельного подтверждения/u);
+});
+test('PoE2 pointer rejects JARVIS UI and requires visible game context', () => {
+  const action = { type: 'click', x: 100, y: 200, target: 'узел Ловкость', reason: 'нужен билду' };
+  assert.equal(groundedPoe2Pointer('На экране только командный канал JARVIS, PoE2 не открыт.', action), null);
+  assert.equal(groundedPoe2Pointer('Вижу рабочий стол и окно помощника.', action), null);
+  assert.deepEqual(groundedPoe2Pointer('В PoE2 открыто дерево пассивов; виден узел Ловкость.', action), action);
+  assert.equal(groundedPoe2Pointer('В PoE2 открыто дерево пассивов.', { ...action, target: 'командный канал JARVIS' }), null);
 });

@@ -88,6 +88,10 @@ namespace JarvisNexus.DesktopShell
         private string _coreVisualState = "idle";
         private string _lastSenseCommand = string.Empty;
         private string _lastSenseReply = string.Empty;
+        private Window _targetOverlay;
+        private int? _targetOverlayX;
+        private int? _targetOverlayY;
+        private string _targetOverlayLabel = string.Empty;
 
         public JarvisPetWindow()
         {
@@ -1442,6 +1446,7 @@ namespace JarvisNexus.DesktopShell
             }
 
             _pendingAction = null;
+            HideTargetOverlay();
             _confirmButton.IsEnabled = false;
             _actionDetailText.Text = "Подтверждение отправлено в локальный safety gate...";
             SetBusy(true);
@@ -1509,6 +1514,19 @@ namespace JarvisNexus.DesktopShell
                 + Environment.NewLine + "Токен одноразовый; повтор требует новой команды.";
             _confirmButton.Content = "ПОДТВЕРДИТЬ";
             _actionCard.Visibility = Visibility.Visible;
+
+            var target = GetObject(action, "target");
+            int targetX;
+            int targetY;
+            if (TryGetInteger(target, "x", out targetX) && TryGetInteger(target, "y", out targetY))
+            {
+                ShowTargetOverlay(targetX, targetY, GetString(target, "label"));
+            }
+            else
+            {
+                HideTargetOverlay();
+            }
+
             UpdateControls();
         }
 
@@ -1516,9 +1534,152 @@ namespace JarvisNexus.DesktopShell
         {
             _pendingAction = null;
             _voiceConfirmationVisible = false;
+            HideTargetOverlay();
             _confirmButton.Content = "ПОДТВЕРДИТЬ";
             _actionCard.Visibility = Visibility.Collapsed;
             UpdateControls();
+        }
+
+        private void ShowTargetOverlay(int screenX, int screenY, string label)
+        {
+            label = string.IsNullOrWhiteSpace(label) ? "СЮДА" : label.Trim();
+            if (_targetOverlay != null
+                && _targetOverlayX == screenX
+                && _targetOverlayY == screenY
+                && string.Equals(_targetOverlayLabel, label, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            HideTargetOverlay();
+
+            var point = new Point(screenX, screenY);
+            var source = PresentationSource.FromVisual(this);
+            if (source != null && source.CompositionTarget != null)
+            {
+                point = source.CompositionTarget.TransformFromDevice.Transform(point);
+            }
+
+            const double overlaySize = 132;
+            var canvas = new Canvas
+            {
+                Width = overlaySize,
+                Height = overlaySize,
+                Background = Brushes.Transparent,
+                IsHitTestVisible = false
+            };
+
+            var pulse = new ScaleTransform(1, 1);
+            var outer = new Ellipse
+            {
+                Width = 82,
+                Height = 82,
+                Stroke = CyanBrush,
+                StrokeThickness = 2.4,
+                StrokeDashArray = new DoubleCollection { 4, 2 },
+                Fill = CreateBrush(8, 26, 38),
+                Opacity = 0.94,
+                RenderTransform = pulse,
+                RenderTransformOrigin = new Point(0.5, 0.5),
+                Effect = new DropShadowEffect
+                {
+                    Color = Color.FromRgb(0, 255, 255),
+                    BlurRadius = 24,
+                    ShadowDepth = 0,
+                    Opacity = 0.95
+                }
+            };
+            Canvas.SetLeft(outer, 25);
+            Canvas.SetTop(outer, 18);
+            canvas.Children.Add(outer);
+
+            var inner = new Ellipse
+            {
+                Width = 34,
+                Height = 34,
+                Stroke = OrangeBrush,
+                StrokeThickness = 2,
+                Fill = Brushes.Transparent,
+                Effect = new DropShadowEffect
+                {
+                    Color = Color.FromRgb(255, 116, 24),
+                    BlurRadius = 16,
+                    ShadowDepth = 0,
+                    Opacity = 0.95
+                }
+            };
+            Canvas.SetLeft(inner, 49);
+            Canvas.SetTop(inner, 42);
+            canvas.Children.Add(inner);
+
+            var horizontal = new Rectangle { Width = 98, Height = 1.5, Fill = CyanSoftBrush, Opacity = 0.88 };
+            Canvas.SetLeft(horizontal, 17);
+            Canvas.SetTop(horizontal, 58.5);
+            canvas.Children.Add(horizontal);
+            var vertical = new Rectangle { Width = 1.5, Height = 98, Fill = CyanSoftBrush, Opacity = 0.88 };
+            Canvas.SetLeft(vertical, 65.25);
+            Canvas.SetTop(vertical, 10);
+            canvas.Children.Add(vertical);
+
+            var caption = new Border
+            {
+                Background = CreateBrush(3, 16, 26),
+                BorderBrush = CyanBrush,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(7, 3, 7, 3),
+                Child = CreateText(label.ToUpperInvariant(), 9, CyanSoftBrush, FontWeights.Bold)
+            };
+            Canvas.SetLeft(caption, Math.Max(2, (overlaySize - Math.Min(124, 16 + (label.Length * 6))) / 2));
+            Canvas.SetTop(caption, 105);
+            canvas.Children.Add(caption);
+
+            var overlay = new Window
+            {
+                Width = overlaySize,
+                Height = overlaySize,
+                Left = Math.Max(SystemParameters.VirtualScreenLeft, Math.Min(point.X - (overlaySize / 2), SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth - overlaySize)),
+                Top = Math.Max(SystemParameters.VirtualScreenTop, Math.Min(point.Y - 60, SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight - overlaySize)),
+                WindowStyle = WindowStyle.None,
+                ResizeMode = ResizeMode.NoResize,
+                AllowsTransparency = true,
+                Background = Brushes.Transparent,
+                ShowInTaskbar = false,
+                ShowActivated = false,
+                Topmost = true,
+                Focusable = false,
+                IsHitTestVisible = false,
+                Content = canvas
+            };
+            overlay.Owner = this;
+            _targetOverlay = overlay;
+            _targetOverlayX = screenX;
+            _targetOverlayY = screenY;
+            _targetOverlayLabel = label;
+            overlay.Show();
+            StartPulse(pulse, 0.92, 1.12, 0.72);
+        }
+
+        private void HideTargetOverlay()
+        {
+            var overlay = _targetOverlay;
+            _targetOverlay = null;
+            _targetOverlayX = null;
+            _targetOverlayY = null;
+            _targetOverlayLabel = string.Empty;
+            if (overlay == null)
+            {
+                return;
+            }
+
+            try
+            {
+                overlay.Close();
+            }
+            catch (InvalidOperationException)
+            {
+                // The owned overlay may already be closing with the main window.
+            }
         }
 
         private async void PollSenseVisualState(object sender, EventArgs e)
@@ -1672,6 +1833,20 @@ namespace JarvisNexus.DesktopShell
                 changed = true;
             }
             var awaitingConfirmation = string.Equals(activity, "awaiting-confirmation", StringComparison.OrdinalIgnoreCase);
+            var voiceTarget = GetObject(payload, "actionTarget");
+            int voiceTargetX;
+            int voiceTargetY;
+            if (awaitingConfirmation
+                && TryGetInteger(voiceTarget, "x", out voiceTargetX)
+                && TryGetInteger(voiceTarget, "y", out voiceTargetY))
+            {
+                ShowTargetOverlay(voiceTargetX, voiceTargetY, GetString(voiceTarget, "label"));
+            }
+            else if (_pendingAction == null)
+            {
+                HideTargetOverlay();
+            }
+
             if (awaitingConfirmation && _pendingAction == null)
             {
                 _voiceConfirmationVisible = true;
@@ -1805,6 +1980,7 @@ namespace JarvisNexus.DesktopShell
             {
                 _visualTimer.Stop();
             }
+            HideTargetOverlay();
 
             if (_speaker == null)
             {

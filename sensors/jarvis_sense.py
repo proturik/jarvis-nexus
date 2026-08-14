@@ -46,7 +46,7 @@ NEURAL_TTS_SPEAKER = "xenia"
 NEURAL_TTS_SAMPLE_RATE = 48_000
 LOCAL_TTS_HOST = "127.0.0.1"
 LOCAL_TTS_PORT = 3793
-LOCAL_TTS_BODY_LIMIT = 8 * 1024
+LOCAL_TTS_BODY_LIMIT = 24 * 1024
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "voiceEnabled": False,
@@ -433,6 +433,17 @@ class LocalTtsBridge:
                     self.send_error(404)
                     return
                 status = bridge_status()
+                raw_target = status.get("actionTarget")
+                action_target = None
+                if isinstance(raw_target, dict):
+                    target_x = raw_target.get("x")
+                    target_y = raw_target.get("y")
+                    if isinstance(target_x, int) and isinstance(target_y, int):
+                        action_target = {
+                            "x": target_x,
+                            "y": target_y,
+                            "label": clean_text(raw_target.get("label"), 100) or "СЮДА",
+                        }
                 body = json.dumps(
                     {
                         "speaking": bridge_speaker.speaking,
@@ -441,7 +452,9 @@ class LocalTtsBridge:
                         "voice": clean_text(status.get("voice"), 32),
                         "activity": clean_text(status.get("activity"), 40),
                         "lastCommand": clean_text(status.get("lastCommand"), 160),
-                        "lastReply": clean_text(status.get("lastReply"), 320),
+                        "lastReply": clean_text(status.get("lastReply"), 1200),
+                        "actionTarget": action_target,
+                        "actionLabel": clean_text(status.get("actionLabel"), 120),
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -464,10 +477,10 @@ class LocalTtsBridge:
                     if not isinstance(payload, dict):
                         raise ValueError("invalid payload")
                     if self.path == "/vision":
-                        prompt = clean_text(payload.get("prompt"), 400)
+                        prompt = clean_text(payload.get("prompt"), 12_000)
                         if not prompt:
                             raise ValueError("empty prompt")
-                        result = bridge_vision(prompt)
+                        result = bridge_vision(prompt, payload.get("allowAction") is True)
                         body = json.dumps({"ok": True, **result}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                         self.send_response(200)
                     else:
@@ -728,16 +741,19 @@ class VoiceWorker:
             if now >= self._pending_until:
                 self._pending_action = None
                 self._pending_until = 0.0
+                self.store.update_status(actionTarget=None, actionLabel="")
                 self.speaker.say("Время подтверждения истекло. Действие отменено.")
             elif CANCEL_PATTERN.search(transcript):
                 self._pending_action = None
                 self._pending_until = 0.0
+                self.store.update_status(actionTarget=None, actionLabel="")
                 self.speaker.say("Отменил действие.")
                 return
             elif CONFIRM_PATTERN.search(transcript):
                 action = self._pending_action
                 self._pending_action = None
                 self._pending_until = 0.0
+                self.store.update_status(actionTarget=None, actionLabel="")
                 self._run_async(self._execute_pending, action)
                 return
 
@@ -784,17 +800,25 @@ class VoiceWorker:
         self.store.update_status(activity="processing", lastCommand=display_command, lastReply="")
         response = post_json(LOCAL_JARVIS + "/api/chat", {"message": command}, timeout=75)
         action = response.get("action")
-        reply = clean_text(response.get("reply"), 320)
+        reply = clean_text(response.get("reply"), 1200)
         if isinstance(action, dict) and clean_text(action.get("token"), 80):
             self._pending_action = action
             self._pending_until = time.monotonic() + 30.0
             label = clean_text(action.get("label"), 110) or "действие"
+            raw_target = action.get("target")
+            safe_target = None
+            if isinstance(raw_target, dict) and isinstance(raw_target.get("x"), int) and isinstance(raw_target.get("y"), int):
+                safe_target = {
+                    "x": raw_target["x"],
+                    "y": raw_target["y"],
+                    "label": clean_text(raw_target.get("label"), 100) or "СЮДА",
+                }
             prompt = "Есть действие: " + label + ". Скажи подтверждаю или отмена в течение тридцати секунд."
-            self.store.update_status(activity="awaiting-confirmation", lastReply=prompt)
+            self.store.update_status(activity="awaiting-confirmation", lastReply=prompt, actionTarget=safe_target, actionLabel=label)
             self.speaker.say(prompt)
             return
         if reply:
-            self.store.update_status(activity="responding", lastReply=reply)
+            self.store.update_status(activity="responding", lastReply=reply, actionTarget=None, actionLabel="")
             self.speaker.say(reply)
 
     def _execute_pending(self, action: dict[str, Any]) -> None:
@@ -805,7 +829,7 @@ class VoiceWorker:
         message = clean_text(response.get("message"), 320)
         if response.get("ok") is not True or not message:
             raise RuntimeError(clean_text(response.get("error"), 180) or "Ядро не подтвердило действие.")
-        self.store.update_status(activity="responding", lastReply=message)
+        self.store.update_status(activity="responding", lastReply=message, actionTarget=None, actionLabel="")
         self.speaker.say(message)
 
 
@@ -821,26 +845,27 @@ class VisionWorker:
     def start(self) -> None:
         self._thread.start()
 
-    def inspect(self, instruction: str) -> dict[str, Any]:
+    def inspect(self, instruction: str, allow_action: bool = False) -> dict[str, Any]:
         settings = self.store.read()
         if settings["visionEnabled"] is not True:
             raise RuntimeError("VISION выключен. Включи кнопку VISION // ON и повтори.")
-        prompt = clean_text(instruction, 400)
+        prompt = clean_text(instruction, 12_000)
         if not prompt:
             raise RuntimeError("Не понял, что нужно посмотреть на экране.")
-        self.store.update_status(vision="looking", visionError="", activity="vision-looking", lastCommand=prompt, lastReply="")
+        display_prompt = clean_text(instruction, 400)
+        self.store.update_status(vision="looking", visionError="", activity="vision-looking", lastCommand=display_prompt, lastReply="")
         with self._inspection_lock:
             image, _changed, frame = self._capture_frame()
-            action_requested = re.search(r"(?:нажми|клик|click|press|выбери|включи|запусти|поставь)", prompt, re.IGNORECASE) is not None
+            action_requested = allow_action is True
             model = ACTION_VISION_MODEL if action_requested else settings["visionModel"]
             try:
-                result = self._ask_local_vision_task(image, model, prompt, frame)
+                result = self._ask_local_vision_task(image, model, prompt, frame, action_requested)
             except Exception:
                 if model == settings["visionModel"]:
                     raise
                 model = settings["visionModel"]
-                result = self._ask_local_vision_task(image, model, prompt, frame)
-        answer = clean_text(result.get("answer"), 320) or "Не смог уверенно понять происходящее на экране."
+                result = self._ask_local_vision_task(image, model, prompt, frame, action_requested)
+        answer = clean_text(result.get("answer"), 1200) or "Не смог уверенно понять происходящее на экране."
         self.store.update_status(vision="watching", visionError="", activity="responding", lastReply=answer, visionModel=model)
         return {"answer": answer, "action": result.get("action"), "frame": frame}
 
@@ -905,8 +930,8 @@ class VisionWorker:
         return output.getvalue(), changed, frame
 
     @staticmethod
-    def _ask_local_vision_task(image: bytes, model: str, instruction: str, frame: dict[str, int]) -> dict[str, Any]:
-        action_requested = re.search(r"(?:нажми|клик|click|press|выбери|включи|запусти|поставь)", instruction, re.IGNORECASE) is not None
+    def _ask_local_vision_task(image: bytes, model: str, instruction: str, frame: dict[str, int], allow_action: bool = False) -> dict[str, Any]:
+        action_requested = allow_action is True
         forbidden = re.search(r"(?:покуп|купи|удал|отправ|вход|логин|парол|плат[её]ж|оплат|установ|install|purchase|delete|send|password|payment)", instruction, re.IGNORECASE) is not None
         allow_tool = action_requested and not forbidden
         prompt = (
@@ -923,7 +948,7 @@ class VisionWorker:
             "stream": False,
             "think": False,
             "keep_alive": 0,
-            "options": {"temperature": 0.05, "num_predict": 220},
+            "options": {"temperature": 0.05, "num_predict": 360},
         }
         if allow_tool:
             payload["tools"] = [{
@@ -936,8 +961,10 @@ class VisionWorker:
                         "properties": {
                             "coordinate": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
                             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                            "visibleTarget": {"type": "string", "description": "Короткое название видимой цели."},
+                            "reason": {"type": "string", "description": "Почему эта цель соответствует запросу и активному билду."},
                         },
-                        "required": ["coordinate", "confidence"],
+                        "required": ["coordinate", "confidence", "visibleTarget", "reason"],
                     },
                 },
             }]
@@ -972,16 +999,32 @@ class VisionWorker:
                             if 0 <= normalized_x <= 1000 and 0 <= normalized_y <= 1000 and confidence >= 0.88:
                                 screen_x = frame["left"] + round(normalized_x * frame["width"] / 1000)
                                 screen_y = frame["top"] + round(normalized_y * frame["height"] / 1000)
-                                safe_action = {"type": "click", "x": screen_x, "y": screen_y, "confidence": round(confidence, 3)}
+                                safe_action = {
+                                    "type": "click",
+                                    "x": screen_x,
+                                    "y": screen_y,
+                                    "confidence": round(confidence, 3),
+                                    "target": clean_text(arguments.get("visibleTarget"), 100) or "СЮДА",
+                                    "reason": clean_text(arguments.get("reason"), 320),
+                                }
                     except (TypeError, ValueError, OverflowError):
                         safe_action = None
-            answer = content or ("Нашёл подходящий элемент. Нажму только после твоего подтверждения." if safe_action else "Вижу экран, но не смог уверенно выбрать безопасную цель.")
-            return {"answer": clean_text(answer, 320), "action": safe_action}
+            if content:
+                answer = content
+            elif safe_action:
+                answer = (
+                    "🎯 ДЕЛАЙ СЕЙЧАС — выбери «" + safe_action["target"] + "».\n"
+                    "💡 ПОЧЕМУ — " + (safe_action["reason"] or "эта цель лучше всего совпадает с запросом и активным билдом.") + "\n"
+                    "⚠️ Клик выполню только после твоего подтверждения."
+                )
+            else:
+                answer = "Вижу экран, но не смог уверенно выбрать безопасную цель."
+            return {"answer": clean_text(answer, 1200), "action": safe_action}
         try:
             parsed = json.loads(content)
         except (TypeError, ValueError, json.JSONDecodeError):
             return {"answer": content or "Не смог уверенно разобрать экран.", "action": None}
-        answer = clean_text(parsed.get("answer"), 320) if isinstance(parsed, dict) else ""
+        answer = clean_text(parsed.get("answer"), 1200) if isinstance(parsed, dict) else ""
         return {"answer": answer or "Не смог уверенно понять происходящее на экране.", "action": None}
 
     @staticmethod

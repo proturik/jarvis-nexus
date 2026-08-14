@@ -234,6 +234,45 @@ export function buildCoachContext(build) {
   return lines.filter(Boolean).join('\n').slice(0, 8000);
 }
 
+export function poe2CoachIntent(message, hasActiveBuild = false) {
+  const request = clean(message, 600);
+  const input = request.toLocaleLowerCase('ru-RU');
+  const explicitContext = /(?:poe\s*2|path\s*of\s*exile|билд|персонаж|экипиров|инвентар|дерев|пассив|камн|скилл|умени|предмет)/iu.test(input);
+  const coachingRequest = /(?:проверь|сверь|оцени|разбери|объясни|подскажи).{0,100}(?:экран|билд|персонаж|экипиров|инвентар|дерев|камн|скилл|предмет)/iu.test(input)
+    || /(?:что|куда|как).{0,35}(?:делать|качать|нажать|вставить|поставить|менять|идти).{0,60}(?:дальше|сейчас|по билду|в poe)/iu.test(input)
+    || /(?:покажи|ткни|укажи).{0,60}(?:куда|что|где).{0,60}(?:нажать|качать|вставить|поставить|менять)/iu.test(input);
+  if (!coachingRequest || (!hasActiveBuild && !explicitContext)) return null;
+  return {
+    request,
+    allowPointer: /(?:покажи|ткни|укажи|куда нажать|что нажать|нажми)/iu.test(input),
+  };
+}
+
+export function buildPoe2CoachVisionPrompt(build, request, allowPointer = false) {
+  if (!build) return '';
+  return [
+    'РЕЖИМ POE2 // СТАРШИЙ БРАТ. Ты не просто описываешь кадр: ты сверяешь видимое с активным билдом и обучаешь пользователя.',
+    'ЗАПРОС ПОЛЬЗОВАТЕЛЯ: ' + clean(request, 600),
+    buildCoachContext(build),
+    'Сначала определи, какой экран PoE2 виден: экипировка, камни, дерево пассивов, награды, торговля или бой. Учитывай только то, что реально читается на свежем кадре.',
+    'Ответь живо и понятно по-русски в формате: 👁 ВИЖУ — один факт. 🎯 ДЕЛАЙ СЕЙЧАС — один конкретный следующий шаг. 💡 ПОЧЕМУ — чем этот шаг помогает активному билду. ⚠️ ПРОВЕРЬ — что не видно или где есть сомнение.',
+    'Не заваливай пользователя списком: максимум три коротких шага, самый важный первым. Не выдумывай уровень, характеристики, предметы, узлы или состояние игры.',
+    allowPointer
+      ? 'Пользователь просит показать место. Если безопасная цель ясно видна, вызови click как УКАЗАТЕЛЬ. Ничего не нажимай сам: действие выполнится только после отдельного подтверждения.'
+      : 'Не вызывай click: сейчас нужен разбор и объяснение, а не действие.',
+  ].join('\n\n').slice(0, 11_000);
+}
+
+export function groundedPoe2Pointer(observation, action) {
+  if (!action || action.type !== 'click') return null;
+  const seen = clean(observation, 1800).toLocaleLowerCase('ru-RU');
+  const target = clean(`${action.target || ''} ${action.reason || ''}`, 600).toLocaleLowerCase('ru-RU');
+  const explicitlyAbsent = /(?:poe\s*2|path\s*of\s*exile|игр\w*)[^.\n]{0,55}(?:не\s+(?:вид|откры|запущ)|нет\s+на\s+экране)|(?:не\s+(?:вид|откры|запущ))[^.\n]{0,55}(?:poe\s*2|path\s*of\s*exile|игр\w*)/iu.test(seen);
+  const foreignUi = /(?:jarvis|джарвис|командн\w*\s+канал|рабоч\w*\s+стол|панел\w*\s+задач|браузер|адресн\w*\s+строк)/iu.test(target);
+  const poe2UiVisible = /(?:poe\s*2|path\s*of\s*exile|дерев\w*\s+пассив|экипиров|инвентар|камн\w*|умени\w*|навык\w*|атлас|панел\w*\s+(?:персонажа|героя)|окн\w*\s+(?:предмет|навык))/iu.test(seen);
+  return !explicitlyAbsent && !foreignUi && poe2UiVisible ? action : null;
+}
+
 export class Poe2BuildCoach {
   constructor(filename) {
     this.filename = filename;

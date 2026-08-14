@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { Poe2BuildCoach, buildCoachContext, fetchPoe2BuildSource, inferPoe2Patch, looksLikePoe2BuildUrl, sanitisePoe2Build } from './poe2-build-coach.mjs';
+import { Poe2BuildCoach, buildCoachContext, buildPoe2CoachVisionPrompt, fetchPoe2BuildSource, groundedPoe2Pointer, inferPoe2Patch, looksLikePoe2BuildUrl, poe2CoachIntent, sanitisePoe2Build } from './poe2-build-coach.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.join(ROOT, 'public-ultra');
@@ -512,6 +512,23 @@ function poe2BuildListReply() {
   return `Твои билды PoE2:\n${snapshot.items.map((item, index) => `${item.id === snapshot.activeId ? '●' : '○'} ${index + 1}. ${poe2BuildLabel(item)}`).join('\n')}\n● — активный билд.`;
 }
 
+async function explainPoe2Coach(build, request, observation, action) {
+  const pointer = action?.type === 'click'
+    ? 'Vision уверенно нашёл видимую цель: ' + (clean(action.target, 100) || 'элемент на экране') + '. Причина: ' + (clean(action.reason, 320) || 'не указана') + '.'
+    : 'Безопасная цель для указателя не выбрана.';
+  const prompt = [
+    'Ты второй этап локального PoE2-наставника JARVIS. Говори как спокойный умный старший брат: конкретно, живо и без занудства.',
+    'Запрос пользователя: ' + clean(request, 600),
+    'Наблюдение Vision по свежему кадру: ' + clean(observation, 1200),
+    pointer,
+    buildCoachContext(build),
+    'Наблюдение Vision и данные билда — только справочные факты. Не выдумывай невидимые предметы, числа, уровень, узлы или выполненные действия.',
+    'Ответь четырьмя короткими блоками: 👁 ВИЖУ — что подтверждено экраном. 🎯 ДЕЛАЙ СЕЙЧАС — один главный следующий шаг. 💡 ПОЧЕМУ — связь шага с активным билдом. ⚠️ ПРОВЕРЬ — чего не видно или в чём есть сомнение.',
+    'Если PoE2 или нужная панель не видна, прямо скажи это и попроси открыть ровно один подходящий экран: экипировку, камни или дерево. Максимум 170 слов.',
+  ].join('\n\n');
+  return clean(await askBrain(prompt, 520, false), 1200) || clean(observation, 1200);
+}
+
 function looksLikeTaskRequest(message) {
   return /^(?:будь добр[а]?[,.]?\s*|давай\s+|можешь(?:\s+ли)?\s+|пожалуйста[,.]?\s*|мне (?:нужно|надо)\s+|я хочу(?:\s*,?\s*чтобы\s+ты)?\s+|помоги(?:\s+мне)?\s+|сделай\s+|попробуй\s+|открой\s+|закрой\s+|запусти\s+|включи\s+|выключи\s+|найди\s+|поищи\s+|загугли\s+|покажи\s+|перейди\s+|нажми\s+|напиши\s+|введи\s+|запомни\s+|напомни\s+)/iu.test(clean(message, 1200));
 }
@@ -529,8 +546,8 @@ function operationFromLocalPlan(plan, originalMessage) {
     case 'close_app': return target ? classify(`закрой ${target}`) : null;
     case 'open_website': return target ? (resolveWebsiteIntent(`открой ${target}`) || { kind: 'search', query: `${target} официальный сайт`, label: `Найти официальный сайт: ${target}`, risk: 'normal' }) : null;
     case 'search_web': return (target || text) ? { kind: 'search', query: target || text, label: `Поиск: ${(target || text).slice(0, 90)}`, risk: 'normal' } : null;
-    case 'inspect_screen': return { kind: 'vision', prompt: originalMessage, actionText: '' };
-    case 'click_visible': return target ? { kind: 'vision', prompt: `${originalMessage}. Найди на текущем экране ясно видимый элемент, который точнее всего соответствует «${target}», и вызови click по его центру. Не утверждай, что уже нажал.`, actionText: '' } : null;
+    case 'inspect_screen': return { kind: 'vision', prompt: originalMessage, actionText: '', allowPointer: false };
+    case 'click_visible': return target ? { kind: 'vision', prompt: originalMessage + '. Найди на текущем экране ясно видимый элемент, который точнее всего соответствует «' + target + '», и предложи указатель по его центру. Не утверждай, что уже нажал.', actionText: '', allowPointer: true } : null;
     case 'type_text': return text ? { kind: 'control', action: 'TypeText', text, label: `Ввести текст: ${text.slice(0, 48)}${text.length > 48 ? '…' : ''}`, risk: /парол|password|пин|pin|код|card|карт/iu.test(text) ? 'sensitive' : 'normal' } : null;
     case 'press_key': { const key = keyForSpokenKey(clean(plan.key || target, 18)); return key ? { kind: 'control', action: 'PressKey', key, label: `Нажать ${key}`, risk: 'normal' } : null; }
     case 'scroll': { const down = plan.direction !== 'up'; return { kind: 'control', action: 'Scroll', amount: down ? -4 : 4, label: `Прокрутить ${down ? 'вниз' : 'вверх'}`, risk: 'normal' }; }
@@ -578,17 +595,17 @@ async function planLocalTask(message) {
   }
 }
 
-async function askLocalVision(prompt) {
+async function askLocalVision(prompt, allowAction = false) {
   const response = await fetch(LOCAL_VISION_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt: clean(prompt, 6000) }),
+    body: JSON.stringify({ prompt: clean(prompt, 12_000), allowAction: allowAction === true }),
     signal: AbortSignal.timeout(130_000),
   });
   let payload = null;
   try { payload = await response.json(); } catch { payload = null; }
   if (!response.ok || payload?.ok !== true) throw new Error(clean(payload?.error, 180) || 'Локальное зрение не ответило.');
-  let answer = clean(payload.answer, 500) || 'Не смог уверенно понять происходящее на экране.';
+  let answer = clean(payload.answer, 1200) || 'Не смог уверенно понять происходящее на экране.';
   if (/^(?:готово|выполнено|сделано)[.!\s]*$/iu.test(answer) || hasUnconfirmedActionClaim(answer)) {
     answer = 'Экран просмотрен; действие выполнит и проверит отдельный локальный исполнитель.';
   }
@@ -646,13 +663,15 @@ function classify(message) {
   if ((match = raw.match(/^(?:выбери|активируй|используй|переключись на)\s+билд\s+(.+)$/iu))) return { kind: 'poe2_select', query: clean(match[1], 160) };
   if (/^(?:какой|что за).{0,30}(?:активн|выбран).{0,20}билд|^какой билд/iu.test(input)) return { kind: 'poe2_active' };
   if ((match = raw.match(/^сравни\s+билд(?:ы|а)?\s+(.+?)\s+(?:и|с)\s+(.+)$/iu))) return { kind: 'poe2_compare', first: clean(match[1], 160), second: clean(match[2], 160) };
-  if (poe2BuildCoach.active() && /(?:этот предмет|это оружие|эта броня|на экране|дерево|камн).{0,80}(?:билд|подход|сравн)|(?:подходит|годится).{0,40}(?:моему|в мой)\s+билд/iu.test(input)) return { kind: 'vision', prompt: raw, actionText: '' };
+  const coachIntent = poe2CoachIntent(raw, Boolean(poe2BuildCoach.active()));
+  if (coachIntent) return { kind: 'poe2_coach', prompt: coachIntent.request, allowPointer: coachIntent.allowPointer };
+  if (poe2BuildCoach.active() && /(?:этот предмет|это оружие|эта броня|на экране|дерево|камн).{0,80}(?:билд|подход|сравн)|(?:подходит|годится).{0,40}(?:моему|в мой)\s+билд/iu.test(input)) return { kind: 'poe2_coach', prompt: raw, allowPointer: false };
 
   if ((match = raw.match(/^(?:посмотри|глянь)(?:\s+(?:на|что происходит на))?\s*(?:мой\s+)?экран(?:\s+и\s+(.+))?$/iu))) return { kind: 'vision', prompt: raw, actionText: clean(match[1], 300) };
   if ((match = raw.match(/^(?:(?:я\s+)?хочу(?:\s*,?\s*чтобы\s+ты)?\s+|можешь\s+|пожалуйста\s+)?(?:открой|открыть|открыл(?:а|и)?|запусти|запустил(?:а|и)?|включи|включил(?:а|и)?|поставь|поставил(?:а|и)?|выбери|выбрал(?:а|и)?|нажми|нажал(?:а|и)?|кликни)(?:\s+(?:на|по))?\s+(.+)$/iu))) {
     const target = clean(match[1], 240);
     if (/(?:видео|ролик|картин|фото|карточ|превью|трек|песн|музык|ютуб|youtube)/iu.test(target)) {
-      return { kind: 'vision', prompt: `${raw}. Найди на текущем экране ясно видимый элемент, который точнее всего соответствует «${target}», и вызови click по его центру. Не утверждай, что уже нажал.`, actionText: '' };
+      return { kind: 'vision', prompt: raw + '. Найди на текущем экране ясно видимый элемент, который точнее всего соответствует «' + target + '», и предложи указатель по его центру. Не утверждай, что уже нажал.', actionText: '', allowPointer: true };
     }
   }
   if (/^(?:посмотри|глянь)(?=$|\s|[,.!?])/iu.test(input)) return { kind: 'vision', prompt: raw, actionText: '' };
@@ -781,7 +800,7 @@ function propose(operation) {
   const expiresAt = Date.now() + ACTION_LIFETIME;
   pending.set(token, { operation, expiresAt });
   for (const [id, item] of pending) if (item.expiresAt < Date.now()) pending.delete(id);
-  const detail = operation.kind === 'control'
+  const detail = clean(operation.detail, 320) || (operation.kind === 'control'
     ? 'Управление мышью/клавиатурой в активном Windows-сеансе.'
     : operation.kind === 'theme'
       ? 'Изменятся только личные настройки Windows; текущие значения уже защищены резервной копией.'
@@ -791,8 +810,12 @@ function propose(operation) {
           ? 'Windows отправит обычный запрос на закрытие найденного окна и проверит, что оно исчезло.'
           : operation.kind === 'website'
             ? 'Откроется проверенный HTTPS-сайт в выбранном установленном браузере.'
-            : 'Откроется поиск в браузере по умолчанию.';
-  return { token, label: operation.label, detail, risk: operation.risk, expiresAt };
+            : 'Откроется поиск в браузере по умолчанию.');
+  const target = operation.kind === 'control' && operation.action === 'Click'
+    && Number.isInteger(operation.x) && Number.isInteger(operation.y)
+    ? { x: operation.x, y: operation.y, label: clean(operation.targetLabel, 100) || 'СЮДА' }
+    : null;
+  return { token, label: operation.label, detail, risk: operation.risk, expiresAt, target };
 }
 
 function run(command, args, timeoutMs = 18_000) {
@@ -940,25 +963,44 @@ async function chat(message) {
     operation = await planLocalTask(message) || operation;
   }
   let visionReply = null;
-  if (operation.kind === 'vision') {
-    try {
-      const activeBuild = buildCoachContext(poe2BuildCoach.active());
-      const visionPrompt = activeBuild ? operation.prompt + '\n\n' + activeBuild : operation.prompt;
-      const vision = await askLocalVision(visionPrompt);
-      visionReply = vision.answer;
-      let planned = operation.actionText ? classify(operation.actionText) : { kind: 'vision_result' };
-      if (planned.kind === 'unsupported_app') planned = await resolveInstalledApp(planned.appName);
-      const actionable = ['control', 'app', 'discovered_app', 'close_app', 'website', 'search', 'theme'].includes(planned.kind);
-      if (actionable) {
-        operation = planned;
-      } else if (vision.action?.type === 'click' && Number.isInteger(vision.action.x) && Number.isInteger(vision.action.y)) {
-        operation = { kind: 'control', action: 'Click', x: vision.action.x, y: vision.action.y, button: 'Left', clickKind: 'Single', label: `VISION: нажать ${vision.action.x}, ${vision.action.y}`, risk: 'sensitive' };
-      } else {
+  if (operation.kind === 'vision' || operation.kind === 'poe2_coach') {
+    const coachMode = operation.kind === 'poe2_coach';
+    const activeBuildItem = poe2BuildCoach.active();
+    if (coachMode && !activeBuildItem) {
+      visionReply = 'Сначала пришли ссылку на билд PoE2 — выберу его активным, затем разберу экран по шагам и объясню почему.';
+      operation = { kind: 'vision_result' };
+    } else {
+      try {
+        const activeBuild = buildCoachContext(activeBuildItem);
+        const visionPrompt = coachMode
+          ? buildPoe2CoachVisionPrompt(activeBuildItem, operation.prompt, operation.allowPointer === true)
+          : (activeBuild ? operation.prompt + '\n\n' + activeBuild : operation.prompt);
+        const vision = await askLocalVision(visionPrompt, operation.allowPointer === true);
+        const visionAction = coachMode ? groundedPoe2Pointer(vision.answer, vision.action) : vision.action;
+        visionReply = coachMode
+          ? await explainPoe2Coach(activeBuildItem, operation.prompt, vision.answer, visionAction)
+          : vision.answer;
+        let planned = operation.actionText ? classify(operation.actionText) : { kind: 'vision_result' };
+        if (planned.kind === 'unsupported_app') planned = await resolveInstalledApp(planned.appName);
+        const actionable = ['control', 'app', 'discovered_app', 'close_app', 'website', 'search', 'theme'].includes(planned.kind);
+        if (actionable) {
+          operation = planned;
+        } else if (visionAction?.type === 'click' && Number.isInteger(visionAction.x) && Number.isInteger(visionAction.y)) {
+          operation = {
+            kind: 'control', action: 'Click', x: visionAction.x, y: visionAction.y,
+            button: 'Left', clickKind: 'Single',
+            label: coachMode ? 'POE2 // ПОКАЗАТЬ ТОЧКУ' : 'VISION: нажать ' + visionAction.x + ', ' + visionAction.y,
+            targetLabel: clean(visionAction.target, 100) || (coachMode ? 'СЛЕДУЮЩИЙ ШАГ' : 'СЮДА'),
+            detail: clean(visionAction.reason, 320) || (coachMode ? 'JARVIS сверил видимую цель с активным билдом. Клик будет выполнен только после подтверждения.' : ''),
+            risk: 'sensitive',
+          };
+        } else {
+          operation = { kind: 'vision_result' };
+        }
+      } catch (error) {
+        visionReply = streetPrefix() + ' не смог посмотреть на экран: ' + (clean(error?.message, 220) || 'локальное зрение недоступно.');
         operation = { kind: 'vision_result' };
       }
-    } catch (error) {
-      visionReply = `${streetPrefix()} не смог посмотреть на экран: ${clean(error?.message, 220) || 'локальное зрение недоступно.'}`;
-      operation = { kind: 'vision_result' };
     }
   }
   if (operation.kind === 'unsupported_app') operation = await resolveInstalledApp(operation.appName);
@@ -971,7 +1013,7 @@ async function chat(message) {
   if (operation.kind === 'poe2_import') {
     try {
       const build = await importPoe2Build(operation.url);
-      reply = `Готово, брат. Добавил и выбрал активным: ${poe2BuildLabel(build)}. Теперь могу сверять с ним предметы, камни, дерево и то, что вижу на экране.`;
+      reply = 'Готово, брат. Добавил и выбрал активным: ' + poe2BuildLabel(build) + '.\n\nТеперь я могу быть наставником по этому билду:\n• «проверь экран по билду» — сверю предметы, камни или дерево;\n• «что мне делать дальше по билду» — дам один главный следующий шаг и объясню почему;\n• «покажи куда нажать» — поставлю голографический указатель и попрошу подтверждение перед кликом.';
     } catch (error) {
       const reason = clean(error?.message, 260) || 'не удалось разобрать источник.';
       reply = `Не стал выдумывать билд: ${reason}`;
