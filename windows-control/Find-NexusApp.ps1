@@ -133,8 +133,22 @@ $safeShortcut = Get-NexusShortcut $Shortcut $roots $shell
 if ($null -eq $safeShortcut) { throw 'Shortcut is not an allowed Start Menu application.' }
 $launch = @{ FilePath = $safeShortcut.target; WorkingDirectory = (Split-Path -Parent $safeShortcut.target); PassThru = $true; ErrorAction = 'Stop' }
 if ($safeShortcut.arguments) { $launch.ArgumentList = $safeShortcut.arguments }
+$beforeHandles = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { [int64]$_.MainWindowHandle })
 $process = Start-Process @launch
-Start-Sleep -Milliseconds 300
-$process.Refresh()
-if ($process.HasExited) { throw 'Application exited before launch could be confirmed.' }
-[pscustomobject]@{ ok = $true; label = $safeShortcut.label } | ConvertTo-Json -Compress -Depth 3
+$confirmed = $null
+$deadline = [DateTime]::UtcNow.AddSeconds(8)
+do {
+    Start-Sleep -Milliseconds 250
+    try { $process.Refresh() } catch { }
+    if (-not $process.HasExited) { $confirmed = $process; break }
+    $visible = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle })
+    $labelName = Normalize-NexusName $safeShortcut.label
+    $targetName = Normalize-NexusName ([System.IO.Path]::GetFileNameWithoutExtension($safeShortcut.target))
+    $confirmed = $visible | Where-Object {
+        $titleName = Normalize-NexusName $_.MainWindowTitle
+        $processName = Normalize-NexusName $_.ProcessName
+        $titleName.Contains($labelName) -or $processName -eq $targetName -or $beforeHandles -notcontains [int64]$_.MainWindowHandle
+    } | Select-Object -First 1
+} while (-not $confirmed -and [DateTime]::UtcNow -lt $deadline)
+if (-not $confirmed) { throw 'Application launch could not be verified by a running process or visible window.' }
+[pscustomobject]@{ ok = $true; label = $safeShortcut.label; process = $confirmed.ProcessName; window = $confirmed.MainWindowTitle } | ConvertTo-Json -Compress -Depth 3
