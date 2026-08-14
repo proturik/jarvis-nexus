@@ -14,6 +14,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 
@@ -423,6 +424,45 @@ namespace JarvisNexus.DesktopShell
 
         private UIElement CreateHubLabel()
         {
+            try
+            {
+                using (var stream = typeof(JarvisPetWindow).Assembly.GetManifestResourceStream("JarvisNexusCore.png"))
+                {
+                    if (stream != null)
+                    {
+                        var bitmap = new BitmapImage();
+                        bitmap.BeginInit();
+                        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                        bitmap.StreamSource = stream;
+                        bitmap.EndInit();
+                        bitmap.Freeze();
+
+                        var grid = new Grid();
+                        grid.Children.Add(new Image
+                        {
+                            Source = bitmap,
+                            Width = 102,
+                            Height = 102,
+                            Stretch = Stretch.Uniform,
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            VerticalAlignment = VerticalAlignment.Center,
+                            IsHitTestVisible = false
+                        });
+                        var core = CreateText("CORE", 7.5, CyanSoftBrush, FontWeights.Bold);
+                        core.HorizontalAlignment = HorizontalAlignment.Center;
+                        core.VerticalAlignment = VerticalAlignment.Bottom;
+                        core.Margin = new Thickness(0, 0, 0, 8);
+                        core.Effect = new DropShadowEffect { Color = Color.FromRgb(0, 0, 0), BlurRadius = 5, ShadowDepth = 0, Opacity = 0.95 };
+                        grid.Children.Add(core);
+                        return grid;
+                    }
+                }
+            }
+            catch
+            {
+                // Keep the lightweight text mark if the embedded image cannot be decoded.
+            }
+
             var stack = new StackPanel
             {
                 VerticalAlignment = VerticalAlignment.Center,
