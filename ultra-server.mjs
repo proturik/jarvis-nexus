@@ -43,7 +43,7 @@ const DEFAULT_SETTINGS = Object.freeze({
 const APP_CATALOG = Object.freeze({
   calculator: { label: 'Калькулятор', executable: 'calc.exe', args: [] },
   discord: { label: 'Discord', executable: path.join(process.env.LOCALAPPDATA || '', 'Discord', 'Update.exe'), args: ['--processStart', 'Discord.exe'], windowTitle: 'Discord' },
-  files: { label: 'Проводник', executable: 'explorer.exe', args: [] },
+  files: { label: 'Проводник', executable: 'explorer.exe', args: ['shell:MyComputerFolder'], windowTitle: 'explorer' },
   notepad: { label: 'Блокнот', executable: 'notepad.exe', args: [] },
   settings: { label: 'Параметры Windows', executable: 'explorer.exe', args: ['ms-settings:'] },
   vscode: { label: 'Visual Studio Code', executable: 'code', args: [] },
