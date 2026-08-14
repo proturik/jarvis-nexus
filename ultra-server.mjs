@@ -10,6 +10,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.join(ROOT, 'public-ultra');
 const ASSETS_DIR = path.join(ROOT, 'assets');
 const DATA_DIR = path.join(ROOT, 'data');
+const KNOWLEDGE_FILE = path.join(ROOT, 'knowledge', 'jarvis-core.json');
 const HOST = '127.0.0.1';
 const PORT = Number.parseInt(process.env.JARVIS_ULTRA_PORT || '3791', 10);
 const BODY_LIMIT = 80 * 1024;
@@ -103,6 +104,12 @@ let state = {
   tasks: [],
 };
 const pending = new Map();
+const DEFAULT_KNOWLEDGE = Object.freeze({
+  version: 'builtin-1',
+  principles: ['Понимай цель, выбирай один безопасный шаг и не заявляй успех без подтверждения ядра.'],
+  taskMethod: [], toolKnowledge: [], conversationRules: [], plannerExamples: [],
+});
+let knowledgeCore = DEFAULT_KNOWLEDGE;
 
 async function loadDotEnv(filename) {
   try {
@@ -135,6 +142,41 @@ function clean(value, limit = 1000) {
   return String(value ?? '').replace(/[\u0000-\u001F\u007F]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, limit);
 }
 
+function sanitiseKnowledge(value) {
+  const list = (key, limit = 16) => (Array.isArray(value?.[key]) ? value[key] : DEFAULT_KNOWLEDGE[key])
+    .filter((item) => typeof item === 'string').slice(0, limit).map((item) => clean(item, 360)).filter(Boolean);
+  const examples = (Array.isArray(value?.plannerExamples) ? value.plannerExamples : [])
+    .filter((item) => item && typeof item === 'object').slice(0, 16)
+    .map((item) => ({ user: clean(item.user, 240), intent: clean(item.intent, 40), target: clean(item.target, 160) }))
+    .filter((item) => item.user && item.intent);
+  return {
+    version: clean(value?.version || DEFAULT_KNOWLEDGE.version, 60),
+    principles: list('principles'), taskMethod: list('taskMethod'), toolKnowledge: list('toolKnowledge'),
+    conversationRules: list('conversationRules'), plannerExamples: examples,
+  };
+}
+
+function knowledgeContext() {
+  const sections = [
+    ['ОБЯЗАТЕЛЬНЫЕ ПРИНЦИПЫ', knowledgeCore.principles],
+    ['МЕТОД ВЫПОЛНЕНИЯ ЗАДАЧ', knowledgeCore.taskMethod],
+    ['ЗНАНИЯ ОБ ИНСТРУМЕНТАХ', knowledgeCore.toolKnowledge],
+    ['ПРАВИЛА ОБЩЕНИЯ', knowledgeCore.conversationRules],
+  ];
+  return sections.filter(([, items]) => items.length).map(([title, items]) => `${title}:\n${items.map((item) => `- ${item}`).join('\n')}`).join('\n\n');
+}
+
+function plannerExamplesContext() {
+  if (!knowledgeCore.plannerExamples.length) return '';
+  return `Примеры маршрутизации:\n${knowledgeCore.plannerExamples.map((item) => `- ${item.user} => intent=${item.intent}; target=${item.target}`).join('\n')}`;
+}
+function cleanPlannedTarget(value) {
+  return clean(value, 240)
+    .replace(/\s*(?:[}✅⚠]|Внимание:|intent\s*=|confidence\s*=).*$/iu, '')
+    .replace(/^["'«]+|["'»]+$/gu, '')
+    .trim();
+}
+
 function sanitiseSettings(value) {
   return {
     ...DEFAULT_SETTINGS,
@@ -161,14 +203,16 @@ function sanitiseProfile(value) {
 
 async function boot() {
   await mkdir(DATA_DIR, { recursive: true });
-  const [settings, profile, memories, tasks, events, conversations] = await Promise.all([
+  const [settings, profile, memories, tasks, events, conversations, knowledge] = await Promise.all([
     readJson(FILES.settings, {}),
     readJson(FILES.profile, {}),
     readJson(FILES.memories, []),
     readJson(FILES.tasks, []),
     readJson(FILES.events, []),
     readJson(FILES.conversations, []),
+    readJson(KNOWLEDGE_FILE, DEFAULT_KNOWLEDGE),
   ]);
+  knowledgeCore = sanitiseKnowledge(knowledge);
   state = {
     settings: sanitiseSettings({ ...DEFAULT_SETTINGS, ...settings }),
     profile: sanitiseProfile(profile),
@@ -237,6 +281,7 @@ function publicState() {
     events: state.events.slice(-16).reverse(),
     conversations: state.conversations.slice(-40),
     system: systemSnapshot(),
+    brain: { knowledgeVersion: knowledgeCore.version, planner: 'qwen3:8b-json-schema', executionPolicy: 'verified-local-tools' },
   };
 }
 
@@ -270,6 +315,7 @@ function systemPrompt() {
     'Если пользователь просит помочь с задачей, сначала пойми конечную цель. Дай следующий конкретный шаг или короткий план; задай один уточняющий вопрос только когда без него нельзя выбрать безопасное действие.',
     'При диагностике и советах не отвечай одним общим вопросом: сразу назови 2–4 вероятные причины, предложи первый безопасный способ проверки и только затем при необходимости задай один конкретный вопрос. Начинай предложения с заглавной буквы.',
     'Отделяй совет от действия на ПК: объяснять и планировать можно сразу, а фактическое действие выполняет только локальное ядро. Никогда не маскируй догадку под выполненный результат.',
+    knowledgeContext(),
     profileContext(),
   ].filter(Boolean).join('\n\n');
 }
@@ -398,7 +444,7 @@ function looksLikeAdviceRequest(message) {
 
 function operationFromLocalPlan(plan, originalMessage) {
   if (!plan || Number(plan.confidence) < 0.72) return null;
-  const target = clean(plan.target, 240);
+  const target = cleanPlannedTarget(plan.target);
   const text = clean(plan.text, 1000);
   switch (plan.intent) {
     case 'chat': return null;
@@ -426,6 +472,8 @@ async function planLocalTask(message) {
     'Определи ОДИН следующий шаг, который прямо просит пользователь. Не выдумывай выполненных действий.',
     'open_app/close_app — программы; open_website — только явно названный сайт; search_web — поиск; inspect_screen — посмотреть экран; click_visible — нажать видимый элемент; type_text/press_key/scroll/focus_window — управление; remember/add_task — память и задачи.',
     'Если это разговор, совет, объяснение или задача без действия на ПК — intent=chat. Если цель действия неоднозначна — intent=clarify и один короткий вопрос.',
+    'Поля target, text, key и question должны содержать только короткое буквальное значение без JSON-фрагментов, эмодзи, предупреждений, объяснений и комментариев.',
+    plannerExamplesContext(),
     `Запрос: ${clean(message, 900)}`,
   ].join('\n');
   try {
@@ -439,7 +487,7 @@ async function planLocalTask(message) {
         stream: false,
         think: false,
         keep_alive: '15m',
-        options: { temperature: 0.05, top_p: 0.8, repeat_penalty: 1.05, num_ctx: 4096, num_predict: 180 },
+        options: { temperature: 0.05, top_p: 0.8, repeat_penalty: 1.05, num_ctx: 4096, num_predict: 360 },
       }),
       signal: AbortSignal.timeout(90_000),
     });
