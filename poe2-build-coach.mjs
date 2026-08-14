@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { lookup } from 'node:dns/promises';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import net from 'node:net';
@@ -7,6 +8,7 @@ import path from 'node:path';
 const MAX_BUILDS = 60;
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
 const MAX_SOURCE_TEXT = 36_000;
+const BROWSER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 const ALLOWED_HOSTS = Object.freeze([
   'maxroll.gg', 'mobalytics.gg', 'pobb.in', 'poe.ninja',
   'pathofexile.com', 'www.pathofexile.com', 'youtube.com', 'www.youtube.com', 'youtu.be',
@@ -24,6 +26,13 @@ function stringList(value, limit = 20, itemLimit = 240) {
 function isAllowedHost(hostname) {
   const host = hostname.toLocaleLowerCase('en-US').replace(/\.$/u, '');
   return ALLOWED_HOSTS.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+}
+
+export function looksLikePoe2BuildUrl(rawUrl) {
+  try {
+    const parsed = new URL(clean(rawUrl, 1200));
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password && (!parsed.port || parsed.port === '443') && isAllowedHost(parsed.hostname);
+  } catch { return false; }
 }
 
 function isPrivateIp(address) {
@@ -100,15 +109,64 @@ async function readLimitedBody(response) {
   return new TextDecoder('utf-8', { fatal: false }).decode(merged);
 }
 
+function fetchMobalyticsWithCurl(url) {
+  return new Promise((resolve, reject) => {
+    const marker = '\n__JARVIS_META__';
+    const child = spawn('curl.exe', [
+      '-sS', '--request', 'GET', '--max-time', '20', '--max-filesize', String(MAX_SOURCE_BYTES),
+      '--proto', '=https', '-A', BROWSER_USER_AGENT,
+      '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      '-H', 'Accept-Language: ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+      '-H', 'Referer: https://mobalytics.gg/poe-2/builds',
+      '-H', 'Sec-Fetch-Dest: document', '-H', 'Sec-Fetch-Mode: navigate', '-H', 'Sec-Fetch-Site: same-origin',
+      '-w', `${marker}%{http_code}\t%{content_type}\t%{redirect_url}`, url.toString(),
+    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const chunks = []; let size = 0; let stderr = ''; let settled = false;
+    const finish = (error, value) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(value); };
+    const timer = setTimeout(() => { child.kill(); finish(new Error('Mobalytics не ответил за 25 секунд.')); }, 25_000);
+    child.stdout.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > MAX_SOURCE_BYTES + 4096) { child.kill(); finish(new Error('Страница билда слишком большая.')); return; }
+      chunks.push(chunk);
+    });
+    child.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString('utf8')).slice(-2000); });
+    child.on('error', (error) => finish(new Error(`Не удалось запустить безопасный загрузчик Mobalytics: ${clean(error.message, 180)}`)));
+    child.on('close', (code) => {
+      if (settled) return;
+      if (code !== 0) return finish(new Error(`Mobalytics не загрузился: ${clean(stderr, 220) || `curl ${code}`}`));
+      const output = Buffer.concat(chunks).toString('utf8');
+      const markerIndex = output.lastIndexOf(marker);
+      if (markerIndex < 0) return finish(new Error('Mobalytics вернул ответ без контрольных метаданных.'));
+      const [statusText, contentType = '', location = ''] = output.slice(markerIndex + marker.length).split('\t');
+      finish(null, { status: Number(statusText), contentType: clean(contentType, 120), location: clean(location, 1200), body: output.slice(0, markerIndex) });
+    });
+  });
+}
+
 export async function fetchPoe2BuildSource(rawUrl, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const resolveHost = options.resolveHost || lookup;
+  const curlImpl = options.curlImpl || fetchMobalyticsWithCurl;
   let current = await validatePoe2BuildUrl(rawUrl, resolveHost);
   for (let redirect = 0; redirect <= 4; redirect += 1) {
     const response = await fetchImpl(current, {
       method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(20_000),
-      headers: { 'User-Agent': 'JARVIS-NEXUS-PoE2-Coach/1.0', Accept: 'text/html,application/json,text/plain;q=0.9' },
+      headers: { 'User-Agent': BROWSER_USER_AGENT, Accept: 'text/html,application/json,text/plain;q=0.9', 'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7' },
     });
+    if (response.status === 403 && (current.hostname === 'mobalytics.gg' || current.hostname.endsWith('.mobalytics.gg'))) {
+      await response.body?.cancel();
+      const fallback = await curlImpl(current);
+      if ([301, 302, 303, 307, 308].includes(fallback.status)) {
+        if (!fallback.location) throw new Error('Источник вернул пустое перенаправление.');
+        current = await validatePoe2BuildUrl(new URL(fallback.location, current).toString(), resolveHost);
+        continue;
+      }
+      if (fallback.status < 200 || fallback.status >= 300) throw new Error(`Источник билда вернул HTTP ${fallback.status}.`);
+      if (!/(?:text\/html|text\/plain|application\/json)/u.test(fallback.contentType.toLocaleLowerCase('en-US'))) throw new Error('Источник вернул неподдерживаемый формат.');
+      const text = extractBuildPageText(fallback.body, fallback.contentType);
+      if (text.length < 40) throw new Error('На странице не удалось найти описание билда.');
+      return { url: current.toString(), host: current.hostname, text };
+    }
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get('location');
       if (!location) throw new Error('Источник вернул пустое перенаправление.');
@@ -123,6 +181,11 @@ export async function fetchPoe2BuildSource(rawUrl, options = {}) {
     return { url: current.toString(), host: current.hostname, text };
   }
   throw new Error('Слишком много перенаправлений при загрузке билда.');
+}
+
+export function inferPoe2Patch(sourceText, title = '') {
+  const grounded = `${clean(title, 200)} ${clean(sourceText, 1200)}`.match(/(?:^|[\s[])(\d+\.\d+(?:\.\d+)?)(?=$|[\s\]:-])/u);
+  return grounded ? clean(grounded[1], 40) : '';
 }
 
 export function sanitisePoe2Build(value, sourceUrl, previous = null) {

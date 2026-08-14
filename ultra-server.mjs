@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { Poe2BuildCoach, buildCoachContext, fetchPoe2BuildSource, sanitisePoe2Build } from './poe2-build-coach.mjs';
+import { Poe2BuildCoach, buildCoachContext, fetchPoe2BuildSource, inferPoe2Patch, looksLikePoe2BuildUrl, sanitisePoe2Build } from './poe2-build-coach.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.join(ROOT, 'public-ultra');
@@ -489,6 +489,8 @@ async function parsePoe2BuildSource(source) {
   const payload = await response.json();
   let parsed;
   try { parsed = JSON.parse(payload?.message?.content || '{}'); } catch { throw new Error('8B-модель вернула повреждённую структуру билда.'); }
+  const groundedPatch = inferPoe2Patch(source.text, parsed.title);
+  if (groundedPatch) parsed.patch = groundedPatch;
   return sanitisePoe2Build(parsed, source.url);
 }
 
@@ -636,7 +638,10 @@ function classify(message) {
   const input = raw.toLocaleLowerCase('ru-RU');
   let match;
   const buildUrlMatch = raw.match(/https:\/\/[^\s<>"']+/iu);
-  if (buildUrlMatch && /(?:билд|poe\s*2|path\s*of\s*exile\s*2)/iu.test(input)) return { kind: 'poe2_import', url: buildUrlMatch[0].replace(/[),.!?]+$/gu, '') };
+  if (buildUrlMatch) {
+    const buildUrl = buildUrlMatch[0].replace(/[),.!?]+$/gu, '');
+    if (looksLikePoe2BuildUrl(buildUrl) || /(?:билд|poe\s*2|path\s*of\s*exile\s*2)/iu.test(input)) return { kind: 'poe2_import', url: buildUrl };
+  }
   if (/^(?:покажи|перечисли|список|какие у меня)(?:\s+мои)?\s+билд/iu.test(input)) return { kind: 'poe2_list' };
   if ((match = raw.match(/^(?:выбери|активируй|используй|переключись на)\s+билд\s+(.+)$/iu))) return { kind: 'poe2_select', query: clean(match[1], 160) };
   if (/^(?:какой|что за).{0,30}(?:активн|выбран).{0,20}билд|^какой билд/iu.test(input)) return { kind: 'poe2_active' };

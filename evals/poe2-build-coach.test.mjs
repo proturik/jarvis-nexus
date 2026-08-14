@@ -4,13 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  Poe2BuildCoach, buildCoachContext, extractBuildPageText,
-  sanitisePoe2Build, validatePoe2BuildUrl,
+  Poe2BuildCoach, buildCoachContext, extractBuildPageText, fetchPoe2BuildSource, inferPoe2Patch,
+  looksLikePoe2BuildUrl, sanitisePoe2Build, validatePoe2BuildUrl,
 } from '../poe2-build-coach.mjs';
 
 const publicResolver = async () => [{ address: '142.250.74.206', family: 4 }];
 
 test('PoE2 URL gate blocks local, insecure and unknown sources', async () => {
+  assert.equal(looksLikePoe2BuildUrl('https://mobalytics.gg/poe-2/builds/test'), true);
+  assert.equal(looksLikePoe2BuildUrl('https://example.com/build'), false);
   await assert.rejects(validatePoe2BuildUrl('http://mobalytics.gg/build', publicResolver), /HTTPS/u);
   await assert.rejects(validatePoe2BuildUrl('https://127.0.0.1/build', publicResolver), /не поддерживается/u);
   await assert.rejects(validatePoe2BuildUrl('https://example.com/build', publicResolver), /не поддерживается/u);
@@ -18,6 +20,20 @@ test('PoE2 URL gate blocks local, insecure and unknown sources', async () => {
   await assert.rejects(validatePoe2BuildUrl('https://mobalytics.gg/build', async () => [{ address: '::ffff:127.0.0.1', family: 6 }]), /небезопасный/u);
   const accepted = await validatePoe2BuildUrl('https://mobalytics.gg/poe-2/builds/test#skills', publicResolver);
   assert.equal(accepted.hash, '');
+});
+
+test('Mobalytics 403 uses bounded browser fallback', async () => {
+  let fallbackCalls = 0;
+  const source = await fetchPoe2BuildSource('https://mobalytics.gg/poe-2/builds/test', {
+    resolveHost: publicResolver,
+    fetchImpl: async () => new Response('blocked', { status: 403, headers: { 'content-type': 'text/html' } }),
+    curlImpl: async () => {
+      fallbackCalls += 1;
+      return { status: 200, contentType: 'text/html; charset=utf-8', location: '', body: '<html><title>Ice Shot Deadeye</title><body>Main skill Ice Shot. Ranger Deadeye leveling build.</body></html>' };
+    },
+  });
+  assert.equal(fallbackCalls, 1);
+  assert.match(source.text, /Ice Shot Deadeye/u);
 });
 
 test('HTML extraction keeps build facts and drops executable page content', () => {
@@ -48,6 +64,11 @@ test('library stores multiple builds, switches active build and persists', async
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('patch is grounded from visible build title instead of model guess', () => {
+  assert.equal(inferPoe2Patch('0.5 Ice Shot Deadeye Leveling Guide - PoE 2 Ranger Build Guide', 'Ice Shot'), '0.5');
+  assert.equal(inferPoe2Patch('Path of Exile 2 build without a patch', 'PoE2 build'), '');
 });
 
 test('sanitiser limits imported model output', () => {
