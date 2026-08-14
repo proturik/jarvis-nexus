@@ -9,9 +9,11 @@ $sourceFile = Join-Path $scriptRoot 'JarvisPet.cs'
 $distDirectory = Join-Path $scriptRoot 'dist'
 $patchedSource = Join-Path $distDirectory 'JarvisPet.build.cs'
 $outputFile = Join-Path $distDirectory 'JarvisPet.exe'
+$iconFile = Join-Path $scriptRoot 'assets\jarvis-nexus.ico'
 
 if (-not [Environment]::Is64BitOperatingSystem) { throw 'JARVIS Pet requires 64-bit Windows.' }
 if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "Source file not found: $sourceFile" }
+if (-not (Test-Path -LiteralPath $iconFile -PathType Leaf)) { throw "Application icon not found: $iconFile" }
 
 $compilerPath = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $compilerPath -PathType Leaf)) { throw "System x64 C# compiler not found: $compilerPath" }
@@ -53,7 +55,7 @@ if (-not $sourceText.Contains($panelNeedle)) { throw 'Pet window clamp patch anc
 $sourceText = $sourceText.Replace($panelNeedle, $panelReplacement)
 [System.IO.File]::WriteAllText($patchedSource, $sourceText, [System.Text.UTF8Encoding]::new($false))
 
-$arguments = @('/nologo', '/noconfig', '/nostdlib+', '/target:winexe', '/platform:x64', '/optimize+', '/debug-', '/warn:4', "/out:$outputFile")
+$arguments = @('/nologo', '/noconfig', '/nostdlib+', '/target:winexe', '/platform:x64', '/optimize+', '/debug-', '/warn:4', "/win32icon:$iconFile", "/out:$outputFile")
 foreach ($reference in $references) { $arguments += "/reference:$reference" }
 $arguments += $patchedSource
 & $compilerPath @arguments
