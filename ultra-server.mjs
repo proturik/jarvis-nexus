@@ -49,6 +49,42 @@ const APP_CATALOG = Object.freeze({
   vscode: { label: 'Visual Studio Code', executable: 'code', args: [] },
 });
 
+const WEBSITE_CATALOG = Object.freeze({
+  youtube: { label: 'YouTube', url: 'https://www.youtube.com/' },
+  twitch: { label: 'Twitch', url: 'https://www.twitch.tv/' },
+  github: { label: 'GitHub', url: 'https://github.com/' },
+  gmail: { label: 'Gmail', url: 'https://mail.google.com/' },
+  google: { label: 'Google', url: 'https://www.google.com/' },
+  vk: { label: 'VK', url: 'https://vk.com/' },
+  rutube: { label: 'Rutube', url: 'https://rutube.ru/' },
+  reddit: { label: 'Reddit', url: 'https://www.reddit.com/' },
+});
+
+function resolveWebsiteIntent(input) {
+  const sites = [
+    ['youtube', /(?:ютуб|ютюб|youtube)/iu],
+    ['twitch', /(?:твич|twitch)/iu],
+    ['github', /(?:гитхаб|гит hub|github)/iu],
+    ['gmail', /(?:джимейл|гмейл|gmail)/iu],
+    ['google', /(?:гугл|google)/iu],
+    ['vk', /(?:вконтакте|вк|vk)/iu],
+    ['rutube', /(?:рутуб|rutube)/iu],
+    ['reddit', /(?:реддит|reddit)/iu],
+  ];
+  const browsers = [
+    ['google chrome', /(?:гугл\s*хром|google\s*chrome|chrome|хром)/iu],
+    ['microsoft edge', /(?:microsoft\s*edge|edge|эдж)/iu],
+    ['firefox', /(?:mozilla\s*firefox|firefox|фаерфокс)/iu],
+    ['opera', /(?:opera|опера)/iu],
+  ];
+  const siteMatch = sites.find(([, expression]) => expression.test(input));
+  if (!siteMatch) return null;
+  const browserMatch = browsers.find(([, expression]) => expression.test(input));
+  if (siteMatch[0] === 'google' && browserMatch && !/(?:сайт|страниц|поиск)/iu.test(input)) return null;
+  const website = WEBSITE_CATALOG[siteMatch[0]];
+  return { kind: 'website', website: siteMatch[0], browserName: browserMatch?.[0] || '', label: `Открыть ${website.label}${browserMatch ? ` в ${browserMatch[0]}` : ''}`, risk: 'normal' };
+}
+
 const MIME = Object.freeze({
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -438,6 +474,10 @@ function classify(message) {
   if (/синхронизируй (?:тему )?(?:windows|виндовс)|тема nexus|примени тему/iu.test(input)) return { kind: 'theme', mode: 'Apply', label: 'Синхронизировать Windows с NEXUS', risk: 'attention' };
   if (/верни (?:тему|оформление)|откати тему|восстанови тему/iu.test(input)) return { kind: 'theme', mode: 'Restore', label: 'Вернуть прежнюю тему Windows', risk: 'attention' };
   if (/(?:^|\s)(?:статус|состояние|диагностик|пульс системы)(?=$|\s|[,.!?])/iu.test(input)) return { kind: 'status' };
+  if (/^(?:открой|запусти|open)(?=$|\s|[,.!?])/iu.test(input)) {
+    const websiteIntent = resolveWebsiteIntent(input);
+    if (websiteIntent) return websiteIntent;
+  }
   if (/^(?:открой|запусти|включи|open)(?=$|\s|[,.!?])/iu.test(input)) {
     const aliases = [['calculator', /калькулятор|calc/iu], ['discord', /дис\s*корд|дискомфорт|discord/iu], ['notepad', /блокнот|notepad/iu], ['files', /проводник|файлы|папк/iu], ['settings', /параметр|настройки windows/iu], ['vscode', /vscode|visual studio code|код/iu]];
     const app = aliases.find(([, expression]) => expression.test(input))?.[0];
@@ -484,6 +524,7 @@ function localReply(message, operation) {
   if (operation.kind === 'status') { const system = systemSnapshot(); return `${streetPrefix()} ${system.cpuCores} потоков, память ${system.memoryPercent}%, аптайм ${system.uptimeMinutes} минут. Всё на связи.`; }
   if (operation.kind === 'app_choices') return `${streetPrefix()} нашёл несколько вариантов для «${operation.appName}»: ${operation.choices.join(' · ')}. Скажи название точнее, и открою нужное.`;
   if (operation.kind === 'unsupported_app') return `${streetPrefix()} не открыл «${operation.appName}»: в меню «Пуск» подходящей безопасной программы не нашёл. Не буду врать, что сделал.`;
+  if (operation.kind === 'website') return `${streetPrefix()} готов открыть ${operation.label.replace(/^Открыть\s+/u, '')}. Подтверди действие на панели.`;
   if (/кто ты|что умеешь/u.test(message.toLocaleLowerCase('ru-RU'))) return `${streetPrefix()} я твой JARVIS: управляю мышью, клавишами, окнами и приложениями; храню профиль, задачи и разговоры локально. На реальные шаги всегда дам нормальное подтверждение.`;
   if (/привет|здорова|салют/u.test(message.toLocaleLowerCase('ru-RU'))) return `${streetPrefix()} на месте. Что сегодня разрулим?`;
   return `${streetPrefix()} понял. Могу выполнить конкретное действие голосом: «перемести мышь 900 500», «кликни 900 500», «напиши привет», «нажми enter», «открой блокнот» или «запомни: …».`;
@@ -518,7 +559,9 @@ function propose(operation) {
         ? 'Откроется безопасный ярлык программы из меню «Пуск».'
         : operation.kind === 'close_app'
           ? 'Windows отправит обычный запрос на закрытие найденного окна и проверит, что оно исчезло.'
-          : 'Откроется поиск в браузере по умолчанию.';
+          : operation.kind === 'website'
+            ? 'Откроется проверенный HTTPS-сайт в выбранном установленном браузере.'
+            : 'Откроется поиск в браузере по умолчанию.';
   return { token, label: operation.label, detail, risk: operation.risk, expiresAt };
 }
 
@@ -631,6 +674,18 @@ async function execute(operation) {
     await launchDetached('rundll32.exe', ['url.dll,FileProtocolHandler', url]);
     return { message: `Открыл поиск: ${operation.query}.` };
   }
+  if (operation.kind === 'website') {
+    const website = WEBSITE_CATALOG[operation.website];
+    if (!website) throw new Error('Сайт не входит в безопасный каталог JARVIS.');
+    if (operation.browserName) {
+      const output = await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', APP_DISCOVERY_SCRIPT, '-Action', 'LaunchUrl', '-Name', operation.browserName, '-Url', website.url], 18_000);
+      const result = JSON.parse(output.trim());
+      if (result.ok !== true || !clean(result.label, 100)) throw new Error('Windows did not confirm browser launch.');
+      return { message: `${website.label} открыт в ${clean(result.label, 100)}.` };
+    }
+    await launchDetached('rundll32.exe', ['url.dll,FileProtocolHandler', website.url]);
+    return { message: `${website.label} открыт в браузере по умолчанию.` };
+  }
   if (operation.kind === 'theme') {
     await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', THEME_SCRIPT, '-Mode', operation.mode]);
     return { message: operation.mode === 'Apply' ? 'Windows синхронизирована с NEXUS: тёмный режим, прозрачность и акцент применены.' : 'Прежние значения темы Windows восстановлены из резервной копии.' };
@@ -647,7 +702,7 @@ async function chat(message) {
       visionReply = vision.answer;
       let planned = operation.actionText ? classify(operation.actionText) : { kind: 'vision_result' };
       if (planned.kind === 'unsupported_app') planned = await resolveInstalledApp(planned.appName);
-      const actionable = ['control', 'app', 'discovered_app', 'close_app', 'search', 'theme'].includes(planned.kind);
+      const actionable = ['control', 'app', 'discovered_app', 'close_app', 'website', 'search', 'theme'].includes(planned.kind);
       if (actionable) {
         operation = planned;
       } else if (vision.action?.type === 'click' && Number.isInteger(vision.action.x) && Number.isInteger(vision.action.y)) {
@@ -667,7 +722,7 @@ async function chat(message) {
 
   let action = null;
   let reply = visionReply;
-  if (['app', 'discovered_app', 'close_app'].includes(operation.kind) && operation.risk === 'normal' && state.settings.alwaysConfirm === false) {
+  if (['app', 'discovered_app', 'close_app', 'website'].includes(operation.kind) && operation.risk === 'normal' && state.settings.alwaysConfirm === false) {
     try {
       const result = await execute(operation);
       const confirmedReply = await friendlyConfirmedReply(message, result) || `${streetPrefix()} ${result.message}`;
@@ -681,7 +736,7 @@ async function chat(message) {
       reply = [visionReply, failureReply].filter(Boolean).join('\n\n');
       await logEvent('action_failed', reason);
     }
-  } else if (['control', 'app', 'discovered_app', 'close_app', 'search', 'theme'].includes(operation.kind)) {
+  } else if (['control', 'app', 'discovered_app', 'close_app', 'website', 'search', 'theme'].includes(operation.kind)) {
     action = propose(operation);
     const proposalReply = await friendlyProposalReply(message, operation);
     reply = [visionReply, proposalReply].filter(Boolean).join('\n\n');

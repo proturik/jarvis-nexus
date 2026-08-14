@@ -8,11 +8,13 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Resolve', 'Launch')]
+    [ValidateSet('Resolve', 'Launch', 'LaunchUrl')]
     [string]$Action,
     [ValidateLength(1, 80)]
     [string]$Name,
-    [string]$Shortcut
+    [string]$Shortcut,
+    [ValidateLength(1, 2048)]
+    [string]$Url
 )
 
 Set-StrictMode -Version Latest
@@ -126,13 +128,29 @@ if ($Action -eq 'Resolve') {
     exit 0
 }
 
-if (-not $Shortcut) { throw 'Shortcut is required.' }
+if ($Action -eq 'LaunchUrl') {
+    if (-not $Name) { throw 'Browser name is required.' }
+    if (-not $Url) { throw 'URL is required.' }
+    try { $safeUri = [Uri]$Url } catch { throw 'URL is invalid.' }
+    if ($safeUri.Scheme -ne 'https' -or -not $safeUri.DnsSafeHost -or $safeUri.UserInfo) { throw 'Only credential-free HTTPS URLs are allowed.' }
+    $resolved = @(Resolve-NexusApps $Name)
+    if ($resolved.Count -eq 0) { throw "Browser not found: $Name" }
+    if ($resolved.Count -gt 1 -and $resolved[0].score -lt 85) { throw "Browser match is ambiguous: $Name" }
+    $Shortcut = $resolved[0].shortcut
+}
+elseif (-not $Shortcut) { throw 'Shortcut is required.' }
 $roots = Get-StartMenuRoots
 $shell = New-Object -ComObject WScript.Shell
 $safeShortcut = Get-NexusShortcut $Shortcut $roots $shell
 if ($null -eq $safeShortcut) { throw 'Shortcut is not an allowed Start Menu application.' }
 $launch = @{ FilePath = $safeShortcut.target; WorkingDirectory = (Split-Path -Parent $safeShortcut.target); PassThru = $true; ErrorAction = 'Stop' }
-if ($safeShortcut.arguments) { $launch.ArgumentList = $safeShortcut.arguments }
+if ($Action -eq 'LaunchUrl') {
+    $arguments = @()
+    if ($safeShortcut.arguments) { $arguments += $safeShortcut.arguments }
+    $arguments += $safeUri.AbsoluteUri
+    $launch.ArgumentList = $arguments
+}
+elseif ($safeShortcut.arguments) { $launch.ArgumentList = $safeShortcut.arguments }
 $beforeHandles = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { [int64]$_.MainWindowHandle })
 $process = Start-Process @launch
 $confirmed = $null
@@ -151,4 +169,4 @@ do {
     } | Select-Object -First 1
 } while (-not $confirmed -and [DateTime]::UtcNow -lt $deadline)
 if (-not $confirmed) { throw 'Application launch could not be verified by a running process or visible window.' }
-[pscustomobject]@{ ok = $true; label = $safeShortcut.label; process = $confirmed.ProcessName; window = $confirmed.MainWindowTitle } | ConvertTo-Json -Compress -Depth 3
+[pscustomobject]@{ ok = $true; label = $safeShortcut.label; process = $confirmed.ProcessName; window = $confirmed.MainWindowTitle; url = $(if ($Action -eq 'LaunchUrl') { $safeUri.AbsoluteUri } else { $null }) } | ConvertTo-Json -Compress -Depth 3
