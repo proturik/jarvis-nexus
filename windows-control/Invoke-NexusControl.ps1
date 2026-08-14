@@ -29,6 +29,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -51,6 +54,10 @@ public static class NexusInput {
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindow(IntPtr hWnd);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
@@ -231,13 +238,14 @@ try {
             $target = Resolve-NexusWindow $Title
             $closedTitle = $target.MainWindowTitle
             $processName = $target.ProcessName
+            $windowHandle = $target.MainWindowHandle
             if (-not $target.CloseMainWindow()) { throw "Windows did not accept a close request for: $closedTitle" }
             $deadline = [DateTime]::UtcNow.AddSeconds(6)
             do {
                 Start-Sleep -Milliseconds 200
-                $remaining = Get-Process -Id $target.Id -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
-            } while ($remaining -and [DateTime]::UtcNow -lt $deadline)
-            if ($remaining) { throw "Window is still open: $($remaining.MainWindowTitle)" }
+                $stillOpen = [NexusInput]::IsWindow($windowHandle)
+            } while ($stillOpen -and [DateTime]::UtcNow -lt $deadline)
+            if ($stillOpen) { throw "Window is still open: $closedTitle" }
             Write-Result @{ title = $closedTitle; process = $processName; closed = $true }
         }
     }

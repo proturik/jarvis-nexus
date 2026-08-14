@@ -422,13 +422,22 @@ function keyForSpokenKey(text) {
   return lookup[text.toLocaleLowerCase('ru-RU')] || null;
 }
 
+function looksLikeActionRequest(message) {
+  return /^(?:(?:я\s+)?хочу(?:\s*,?\s*чтобы\s+ты)?\s+|можешь\s+|пожалуйста\s+)?(?:открой|открыть|закрой|закрыть|запусти|включи|выключи|поставь|выбери|нажми|кликни|перемести|напиши|сделай)(?=$|\s|[,.!?])/iu.test(clean(message, 1200));
+}
+
 function classify(message) {
   const raw = clean(message, 1200);
   const input = raw.toLocaleLowerCase('ru-RU');
   let match;
 
   if ((match = raw.match(/^(?:посмотри|глянь)(?:\s+(?:на|что происходит на))?\s*(?:мой\s+)?экран(?:\s+и\s+(.+))?$/iu))) return { kind: 'vision', prompt: raw, actionText: clean(match[1], 300) };
-  if (/^(?:включи|запусти|поставь)\s+(?:эту\s+)?(?:музыку|музон|трек|видео)(?=$|\s|[,.!?])/iu.test(input)) return { kind: 'vision', prompt: `${raw}. Найди на текущем экране наиболее подходящую ясно видимую безопасную видеокарточку или кнопку воспроизведения и предложи клик; не утверждай, что уже нажал.`, actionText: '' };
+  if ((match = raw.match(/^(?:(?:я\s+)?хочу(?:\s*,?\s*чтобы\s+ты)?\s+|можешь\s+|пожалуйста\s+)?(?:открой|открыть|запусти|включи|поставь|выбери|нажми(?:\s+на)?|кликни(?:\s+по)?)\s+(.+)$/iu))) {
+    const target = clean(match[1], 240);
+    if (/(?:видео|ролик|картин|фото|карточ|превью|трек|песн|музык|ютуб|youtube)/iu.test(target)) {
+      return { kind: 'vision', prompt: `${raw}. Найди на текущем экране ясно видимый элемент, который точнее всего соответствует «${target}», и вызови click по его центру. Не утверждай, что уже нажал.`, actionText: '' };
+    }
+  }
   if (/^(?:посмотри|глянь)(?=$|\s|[,.!?])/iu.test(input)) return { kind: 'vision', prompt: raw, actionText: '' };
   if (/^(?:что (?:ты )?видишь|что происходит) на экране|^(?:опиши|проанализируй) экран|^помоги .{0,40}(?:на|с) экране/iu.test(input)) return { kind: 'vision', prompt: raw, actionText: '' };
   if ((match = raw.match(/^(?:запомни|помни)\s*[:,—-]?\s*(.+)$/iu))) return { kind: 'remember', text: clean(match[1], 600) };
@@ -466,10 +475,12 @@ function classify(message) {
       ['Spotify', /спотифай|spotify/iu],
       ['Firefox', /фаерфокс|firefox/iu],
       ['Opera', /опера|opera/iu],
+      ['explorer', /проводник|файловый менеджер|file explorer|explorer/iu, 'Проводник'],
     ];
     const known = aliases.find(([, expression]) => expression.test(requested));
     const title = known?.[0] || requested;
-    return { kind: 'close_app', title, label: `Закрыть ${title}`, risk: known ? 'normal' : 'sensitive' };
+    const displayTitle = known?.[2] || title;
+    return { kind: 'close_app', title, displayTitle, label: `Закрыть ${displayTitle}`, risk: known ? 'normal' : 'sensitive' };
   }
   if ((match = raw.match(/^(?:переключись|активируй окно)\s+(.+)$/iu))) return { kind: 'control', action: 'FocusWindow', title: clean(match[1], 120), label: `Активировать окно: ${clean(match[1], 70)}`, risk: 'normal' };
   if (/что (?:сейчас )?(?:открыто|на экране)|покажи окна/iu.test(input)) return { kind: 'control', action: 'ListWindows', label: 'Прочитать названия открытых окон', risk: 'sensitive' };
@@ -571,11 +582,22 @@ function run(command, args, timeoutMs = 18_000) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: true, shell: false });
     let stdout = ''; let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
     const timeout = setTimeout(() => { child.kill(); reject(new Error('Команда превысила лимит времени.')); }, timeoutMs);
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', (error) => { clearTimeout(timeout); reject(error); });
-    child.on('close', (code) => { clearTimeout(timeout); code === 0 ? resolve(stdout) : reject(new Error(clean(stderr || stdout || `Код завершения ${code}`, 420))); });
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code === 0) { resolve(stdout); return; }
+      let detail = clean(stderr || stdout || `Код завершения ${code}`, 420);
+      try {
+        const payload = JSON.parse(stdout.trim());
+        if (payload && typeof payload.error === 'string') detail = clean(payload.error, 420);
+      } catch { /* Non-JSON tool errors stay plain text. */ }
+      reject(new Error(detail));
+    });
   });
 }
 
@@ -732,9 +754,12 @@ async function chat(message) {
       await logEvent('action_done', result.message);
     } catch (error) {
       const reason = clean(error && error.message, 240) || 'Windows не подтвердил действие.';
+      const friendlyReason = operation.kind === 'close_app' && /^(?:Окно не найдено|Window not found):/iu.test(reason)
+        ? `отдельное окно «${operation.displayTitle || operation.title}» сейчас не открыто.`
+        : reason;
       const failureReply = operation.kind === 'close_app'
-        ? `${streetPrefix()} не закрыл ${operation.title}: ${reason}`
-        : `${streetPrefix()} не открыл ${operation.label.replace(/^Открыть\s+/u, '')}: ${reason}`;
+        ? `${streetPrefix()} не закрыл ${operation.displayTitle || operation.title}: ${friendlyReason}`
+        : `${streetPrefix()} не открыл ${operation.label.replace(/^Открыть\s+/u, '')}: ${friendlyReason}`;
       reply = [visionReply, failureReply].filter(Boolean).join('\n\n');
       await logEvent('action_failed', reason);
     }
@@ -743,7 +768,7 @@ async function chat(message) {
     const proposalReply = await friendlyProposalReply(message, operation);
     reply = [visionReply, proposalReply].filter(Boolean).join('\n\n');
   } else if (operation.kind === 'chat') {
-    if (/^(?:открой|закрой|запусти|включи|выключи|нажми|кликни|перемести|напиши|сделай|поставь)(?=$|\s|[,.!?])/iu.test(message)) {
+    if (looksLikeActionRequest(message)) {
       reply = `${streetPrefix()} команду не разобрал и ничего не выполнял. Назови действие и цель чуть точнее — без вранья разберусь.`;
     } else {
       reply = await askBrain(message);
