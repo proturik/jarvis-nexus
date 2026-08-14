@@ -345,8 +345,12 @@ async function askLocalVision(prompt) {
   let payload = null;
   try { payload = await response.json(); } catch { payload = null; }
   if (!response.ok || payload?.ok !== true) throw new Error(clean(payload?.error, 180) || 'Локальное зрение не ответило.');
+  let answer = clean(payload.answer, 500) || 'Не смог уверенно понять происходящее на экране.';
+  if (/^(?:готово|выполнено|сделано)[.!\s]*$/iu.test(answer) || hasUnconfirmedActionClaim(answer)) {
+    answer = 'Экран просмотрен; действие выполнит и проверит отдельный локальный исполнитель.';
+  }
   return {
-    answer: clean(payload.answer, 500) || 'Не смог уверенно понять происходящее на экране.',
+    answer,
     action: payload.action && typeof payload.action === 'object' ? payload.action : null,
   };
 }
