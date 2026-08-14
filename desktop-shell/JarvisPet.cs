@@ -6,6 +6,7 @@ using System.IO;
 using System.Net.Http;
 using System.Speech.Synthesis;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows;
@@ -1396,16 +1397,19 @@ namespace JarvisNexus.DesktopShell
                 return;
             }
 
+            var isBuildImport = LooksLikePoe2BuildImport(message);
             SetBusy(true);
             HideAction();
-            SetStatus(ActivityCaption(message));
-            _replyText.Text = "ВЫ // " + message + "\n\nJARVIS // выполняю и проверяю...";
+            SetStatus(isBuildImport ? "POE2 // ЗАГРУЖАЮ · АНАЛИЗИРУЮ" : ActivityCaption(message));
+            _replyText.Text = "ВЫ // " + message + "\n\nJARVIS // " +
+                (isBuildImport ? "загружаю билд и сверяю его через 8B-модель..." : "выполняю и проверяю...");
 
             try
             {
                 var response = await PostJsonAsync(
                     "api/chat",
-                    new Dictionary<string, object> { { "message", message } });
+                    new Dictionary<string, object> { { "message", message } },
+                    isBuildImport ? 180 : 120);
                 var reply = GetString(response, "reply");
                 if (string.IsNullOrWhiteSpace(reply))
                 {
@@ -1825,31 +1829,80 @@ namespace JarvisNexus.DesktopShell
             Top = Math.Max(workArea.Top + 16, workArea.Bottom - Height - 52);
         }
 
-        private static async Task<Dictionary<string, object>> PostJsonAsync(string relativePath, Dictionary<string, object> body)
+        private static bool LooksLikePoe2BuildImport(string message)
+        {
+            var supportedHosts = new[]
+            {
+                "mobalytics.gg", "maxroll.gg", "pobb.in", "poe.ninja",
+                "pathofexile.com", "youtube.com", "youtu.be"
+            };
+
+            foreach (var rawToken in (message ?? string.Empty).Split((char[])null, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var token = rawToken.Trim('"', '\'', '(', ')', '[', ']', '{', '}', '<', '>', ',', '.', '!', '?', ';');
+                Uri uri;
+                if (!Uri.TryCreate(token, UriKind.Absolute, out uri) ||
+                    !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+                    !string.IsNullOrEmpty(uri.UserInfo) ||
+                    (!uri.IsDefaultPort && uri.Port != 443))
+                {
+                    continue;
+                }
+
+                foreach (var host in supportedHosts)
+                {
+                    if (string.Equals(uri.Host, host, StringComparison.OrdinalIgnoreCase) ||
+                        uri.Host.EndsWith("." + host, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static async Task<Dictionary<string, object>> PostJsonAsync(
+            string relativePath,
+            Dictionary<string, object> body,
+            int timeoutSeconds = 15)
         {
             var requestJson = Serializer.Serialize(body);
             using (var content = new StringContent(requestJson, Encoding.UTF8, "application/json"))
-            using (var response = await Http.PostAsync(relativePath, content))
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds)))
             {
-                var responseText = await response.Content.ReadAsStringAsync();
-                var payload = ParseJsonObject(responseText);
-                if (!response.IsSuccessStatusCode)
+                HttpResponseMessage response;
+                try
                 {
-                    var error = GetString(payload, "error");
-                    if (string.IsNullOrWhiteSpace(error))
+                    response = await Http.PostAsync(relativePath, content, timeout.Token);
+                }
+                catch (TaskCanceledException)
+                {
+                    throw new RequestTimeoutException(timeoutSeconds);
+                }
+
+                using (response)
+                {
+                    var responseText = await response.Content.ReadAsStringAsync();
+                    var payload = ParseJsonObject(responseText);
+                    if (!response.IsSuccessStatusCode)
                     {
-                        error = "Локальное ядро вернуло HTTP " + ((int)response.StatusCode).ToString(CultureInfo.InvariantCulture) + ".";
+                        var error = GetString(payload, "error");
+                        if (string.IsNullOrWhiteSpace(error))
+                        {
+                            error = "Локальное ядро вернуло HTTP " + ((int)response.StatusCode).ToString(CultureInfo.InvariantCulture) + ".";
+                        }
+
+                        throw new ApiException(error);
                     }
 
-                    throw new ApiException(error);
-                }
+                    if (payload == null)
+                    {
+                        throw new ApiException("Локальное ядро вернуло некорректный JSON.");
+                    }
 
-                if (payload == null)
-                {
-                    throw new ApiException("Локальное ядро вернуло некорректный JSON.");
+                    return payload;
                 }
-
-                return payload;
             }
         }
 
@@ -1944,9 +1997,15 @@ namespace JarvisNexus.DesktopShell
                 return apiError.Message;
             }
 
+            var timeoutError = exception as RequestTimeoutException;
+            if (timeoutError != null)
+            {
+                return timeoutError.Message;
+            }
+
             if (exception is TaskCanceledException)
             {
-                return "Локальное ядро не ответило за 15 секунд.";
+                return "Локальный запрос был отменён.";
             }
 
             if (exception is HttpRequestException)
@@ -2007,7 +2066,7 @@ namespace JarvisNexus.DesktopShell
             var client = new HttpClient(handler)
             {
                 BaseAddress = new Uri(LocalService),
-                Timeout = TimeSpan.FromSeconds(15)
+                Timeout = System.Threading.Timeout.InfiniteTimeSpan
             };
             return client;
         }
@@ -2062,6 +2121,14 @@ namespace JarvisNexus.DesktopShell
         {
             public ApiException(string message)
                 : base(message)
+            {
+            }
+        }
+
+        private sealed class RequestTimeoutException : Exception
+        {
+            public RequestTimeoutException(int seconds)
+                : base("Локальное ядро не ответило за " + seconds.ToString(CultureInfo.InvariantCulture) + " секунд. Запрос остановлен безопасно.")
             {
             }
         }
