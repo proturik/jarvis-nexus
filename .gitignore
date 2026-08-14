@@ -1,0 +1,29 @@
+data/*.json
+.env
+node_modules/
+# Local runtimes and generated builds
+.venv*/
+**/__pycache__/
+**/build/
+**/dist/
+release/
+*.exe
+*.cab
+*.sed
+*.log
+*.bak
+*.tmp
+
+# Large local AI models
+sensors/models/
+*.pt
+*.onnx
+*.gguf
+
+# Private runtime state and captures
+**/sense-settings.json
+**/sense-status.json
+**/screen*.jpg
+**/screen*.png
+**/capture*/
+*-backup-*/

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#050d18" />
+    <meta name="description" content="JARVIS NEXUS ULTRA — личный голосовой компаньон для Windows." />
+    <title>JARVIS NEXUS ULTRA</title>
+    <link rel="stylesheet" href="/ultra.css" />
+  </head>
+  <body>
+    <div class="ambient-grid" aria-hidden="true"></div>
+    <div class="grain" aria-hidden="true"></div>
+    <main class="nexus-app">
+      <header class="nexus-header">
+        <div class="nexus-brand"><span class="brand-core"><i></i></span><div><small>PRIVATE COMPANION OS</small><strong>JARVIS <em>NEXUS</em> <b>ULTRA</b></strong></div></div>
+        <div class="header-center"><span class="live-led"></span><span>ПАМЯТЬ / ЖИВАЯ</span><span class="header-divider"></span><span id="context-days">ЗАГРУЖАЮ КОНТЕКСТ</span></div>
+        <div class="header-right"><button class="bare-button" id="open-settings" type="button">КОНТУР <span>⚙</span></button><time id="clock">--:--:--</time></div>
+      </header>
+
+      <aside class="left-rail">
+        <section class="profile-card" id="profile-card">
+          <p class="section-label">ТВОЙ ПРОФИЛЬ</p>
+          <div class="profile-avatar" id="profile-avatar">?</div>
+          <h2 id="profile-name">Твой напарник ждёт имя</h2>
+          <p id="profile-hint">Скажи: «Меня зовут …» — и я это запомню после перезагрузки.</p>
+          <div class="memory-count"><span>◈</span><b id="memory-count">0</b><small>ЛОКАЛЬНЫХ ФАКТОВ</small></div>
+        </section>
+        <nav class="mode-nav" aria-label="Разделы NEXUS">
+          <button class="mode-button is-active" data-panel="dialogue" type="button"><span>◉</span>Диалог</button>
+          <button class="mode-button" data-panel="memory" type="button"><span>◈</span>Память</button>
+          <button class="mode-button" data-panel="missions" type="button"><span>✓</span>Задачи</button>
+        </nav>
+        <section class="rail-note"><p class="section-label">БЕЗОПАСНАЯ ОСНОВА</p><p>Я могу много. Но реальные клики, ввод и системные изменения проходят через твоё подтверждение.</p><div><span>ALLOWLIST</span><span>LOCAL STATE</span></div></section>
+      </aside>
+
+      <section class="main-stage">
+        <section class="dialogue-panel panel is-visible" data-panel-view="dialogue">
+          <div class="hero-line"><div><p class="section-label">VOICE-FIRST COMMAND DECK</p><h1>Слово за тобой.<br /><span>Дело за мной.</span></h1></div><button class="vision-status" id="vision-explainer" type="button"><i></i><span>ГЛАЗА · ПРИВАТНЫЙ РЕЖИМ</span></button></div>
+
+          <div class="core-and-status">
+            <div class="holo-core" id="holo-core" role="img" aria-label="Голографическое ядро JARVIS">
+              <div class="ring ring-a"></div><div class="ring ring-b"></div><div class="ring ring-c"></div><div class="orbit-line orbit-a"><i></i></div><div class="orbit-line orbit-b"><i></i></div>
+              <div class="prism"><div class="eye"><span></span></div></div>
+              <svg class="scope-wave" viewBox="0 0 420 92" preserveAspectRatio="none" aria-hidden="true"><path d="M0 46h28l8-10 8 19 10-32 11 45 12-31 9 17 13-7 9 16 10-42 9 46 13-27 10 18 11-9 10 14 11-41 12 47 9-34 13 17 10-8 10 16 10-39 12 44 10-28 11 19 10-8 13 14 8-34 13 37 10-19 10 16 12-6 9 11 10-30 11 33 12-15 9 12h28" /></svg>
+              <div class="core-caption"><span class="live-led"></span><strong id="core-text">СЛУШАЮ КОМАНДУ</strong></div>
+              <small class="core-coords">NEXUS // 50.4501 N · 30.5234 E</small>
+            </div>
+            <div class="capability-list"><p class="section-label">РУКИ И ПАМЯТЬ</p><article><span class="cap-icon cyan">⌖</span><div><b>Мышь и окна</b><small>Координаты, клики, фокус, прокрутка</small></div><i>READY</i></article><article><span class="cap-icon orange">⌨</span><div><b>Клавиатура</b><small>Текст, клавиши и горячие команды</small></div><i>READY</i></article><article><span class="cap-icon purple">◈</span><div><b>Память о тебе</b><small>Профиль и диалоги после рестарта</small></div><i>LOCAL</i></article></div>
+          </div>
+
+          <section class="conversation-shell">
+            <div class="conversation-top"><span class="section-label">СВЯЗЬ С НАПАРНИКОМ</span><button class="bare-button" id="clear-view" type="button">ОЧИСТИТЬ ОКНО</button></div>
+            <div class="conversation" id="conversation" aria-live="polite"></div>
+            <form class="command-form" id="command-form">
+              <button class="voice-key" id="voice-key" type="button" aria-label="Сказать команду"><span></span><span></span><span></span><span></span><span></span></button>
+              <label class="command-field"><span class="sr-only">Команда для JARVIS</span><input id="command-input" autocomplete="off" maxlength="1200" placeholder="Скажи: «Открой блокнот» или «Запомни: …»" /><kbd>ENTER</kbd></label>
+              <button class="launch-key" type="submit" aria-label="Отправить команду">↗</button>
+            </form>
+            <p class="command-help" id="command-help">Голосовой контур использует браузер. Ввод, клики и системные действия всегда спрашивают разрешение.</p>
+          </section>
+
+          <section class="quick-grid" aria-label="Примеры голосовых команд">
+            <button data-command="Открой блокнот" type="button"><i class="quick-cyan">✎</i><span><b>Быстрая мысль</b><small>Открой Блокнот</small></span><em>→</em></button>
+            <button data-command="Покажи статус системы" type="button"><i class="quick-orange">◎</i><span><b>Системный пульс</b><small>Проверить ПК</small></span><em>→</em></button>
+            <button data-command="Что мы обсуждали вчера" type="button"><i class="quick-purple">◈</i><span><b>Вернуть контекст</b><small>Вспомнить вчера</small></span><em>→</em></button>
+            <button data-command="Перемести мышь 900 500" type="button"><i class="quick-green">⌖</i><span><b>Режим рук</b><small>Команда мыши</small></span><em>→</em></button>
+          </section>
+        </section>
+
+        <section class="memory-panel panel" data-panel-view="memory">
+          <div class="panel-intro"><p class="section-label">LONG-TERM LOCAL MEMORY</p><h1>Я помню<br /><span>не ради вида.</span></h1><p>Эта память хранится на твоём ПК. После перезагрузки я загружу профиль, сохранённые факты, задачи и историю бесед.</p></div>
+          <div class="memory-list" id="memory-list"></div>
+        </section>
+
+        <section class="missions-panel panel" data-panel-view="missions">
+          <div class="panel-intro"><p class="section-label">MISSION QUEUE</p><h1>Не забуду.<br /><span>Не сольюсь.</span></h1><p>Задачи можно добавлять голосом. Отметь готовую, и я оставлю след в истории.</p></div>
+          <div class="task-list" id="task-list"></div>
+        </section>
+      </section>
+
+      <aside class="right-rail">
+        <section class="telemetry-card"><p class="section-label">СОСТОЯНИЕ КОНТУРА</p><div class="meter"><svg viewBox="0 0 120 68" aria-hidden="true"><path class="meter-track" d="M12 61a48 48 0 0 1 96 0"/><path class="meter-progress" id="meter-progress" d="M12 61a48 48 0 0 1 96 0"/></svg><strong id="ram-percent">--%</strong><small>ПАМЯТЬ</small></div><dl><div><dt>CPU потоки</dt><dd id="cpu-cores">—</dd></div><div><dt>Аптайм</dt><dd id="uptime">—</dd></div><div><dt>Интеллект</dt><dd id="brain-status">LOCAL</dd></div></dl></section>
+        <section class="timeline-card"><div class="rail-title"><p class="section-label">ПОСЛЕДНИЙ СЛЕД</p><button id="refresh-data" type="button" aria-label="Обновить">↻</button></div><ol id="timeline"></ol></section>
+        <section class="phrase-card"><span>“</span><p id="friend-phrase">Не надо быть идеальным. Дай мне задачу — и разрулим.</p><small>JARVIS / NEXUS ULTRA</small></section>
+      </aside>
+    </main>
+
+    <dialog id="confirm-dialog" class="nexus-dialog"><form method="dialog"><button class="dialog-close" value="cancel" aria-label="Закрыть">×</button><p class="section-label">SAFETY GATE</p><h2 id="confirm-title">Подтвердить?</h2><p id="confirm-detail">JARVIS ждёт твоё разрешение.</p><div><button value="cancel" class="cancel-button" type="submit">Отмена</button><button id="confirm-action" class="confirm-button" type="button">Подтвердить →</button></div></form></dialog>
+    <dialog id="settings-dialog" class="nexus-dialog"><form method="dialog" id="settings-form"><button class="dialog-close" value="cancel" aria-label="Закрыть">×</button><p class="section-label">CHARACTER CONSOLE</p><h2>Настроить характер</h2><label>Манера общения<select id="personality"><option value="classic">Классический — спокойно</option><option value="street-kind">Добрый гопник — дерзко и по-доброму</option><option value="street-max">Острый — максимум характера, без токсичности</option></select></label><label class="switch-line"><input id="voice-enabled" type="checkbox" /><span></span>Озвучивать ответы</label><label>Модель облачного мозга<input id="model" maxlength="100" placeholder="Только если сам добавишь ключ в .env" /></label><p class="dialog-note">Ключ API не живёт в браузере и не показывается здесь.</p><div><button value="cancel" class="cancel-button" type="submit">Отмена</button><button class="confirm-button" type="submit">Сохранить →</button></div></form></dialog>
+    <template id="message-template"><article class="message"><div class="message-mark"></div><div><p class="message-meta"></p><p class="message-copy"></p></div></article></template>
+    <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+    <script src="/ultra.js" defer></script>
+  </body>
+</html>

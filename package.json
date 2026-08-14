@@ -1,0 +1,15 @@
+{
+  "name": "jarvis-nexus",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Локальный голосовой ассистент JARVIS NEXUS для Windows.",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

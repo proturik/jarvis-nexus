@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#07121e" />
+    <meta name="description" content="JARVIS NEXUS — локальный голосовой ассистент для Windows." />
+    <title>JARVIS NEXUS</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <div class="scanlines" aria-hidden="true"></div>
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="Навигация JARVIS">
+        <div class="brand-lockup">
+          <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div>
+            <p class="eyebrow">PRIVATE AI SYSTEM</p>
+            <strong>JARVIS <em>NEXUS</em></strong>
+          </div>
+        </div>
+
+        <nav class="nav-list" aria-label="Разделы">
+          <button class="nav-button is-active" data-view="core" type="button"><span class="nav-icon">◎</span>Ядро<span class="nav-led"></span></button>
+          <button class="nav-button" data-view="memory" type="button"><span class="nav-icon">◈</span>Память</button>
+          <button class="nav-button" data-view="automations" type="button"><span class="nav-icon">↗</span>Сценарии</button>
+          <button class="nav-button" data-view="home" type="button"><span class="nav-icon">⌂</span>Дом</button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <div class="security-chip"><span class="pulse-dot"></span><span>LOCAL · SAFE GATE</span></div>
+          <button class="settings-link" id="open-settings" type="button"><span>⚙</span>Параметры</button>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div class="location"><span class="location-dot"></span><span id="view-title">ЯДРО / ГОЛОСОВОЙ КОНТУР</span></div>
+          <div class="topbar-status">
+            <span class="status-chip" id="cloud-chip"><b></b><span>МОЗГ: ЛОКАЛЬНЫЙ</span></span>
+            <span class="clock" id="clock">--:--</span>
+          </div>
+        </header>
+
+        <div class="view is-visible" id="view-core" data-view-panel="core">
+          <section class="hero-grid">
+            <div class="hero-copy">
+              <p class="eyebrow accent">NEXUS / ONLINE</p>
+              <h1>Твой напарник.<br /><span>Всегда на связи.</span></h1>
+              <p class="hero-description">Голос, память, задачи и действия Windows — всё под твоим контролем. Никакой тихой самодеятельности: каждое реальное действие проходит через шлюз подтверждения.</p>
+              <div class="hero-actions">
+                <button class="primary-button" id="focus-command" type="button"><span>⌘</span>Дать команду <kbd>Ctrl K</kbd></button>
+                <button class="ghost-button" id="toggle-voice" type="button"><span aria-hidden="true">◌</span><span id="voice-toggle-label">Голос включён</span></button>
+              </div>
+              <div class="hero-meta">
+                <span><b>01</b> частный контур</span>
+                <span><b>02</b> память на ПК</span>
+                <span><b>03</b> safe-by-default</span>
+              </div>
+            </div>
+
+            <div class="core-stage" id="core-stage" aria-label="Голографическое ядро JARVIS" role="img">
+              <div class="coordinate x-axis"></div>
+              <div class="coordinate y-axis"></div>
+              <div class="radar-rings" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+              <div class="orbit orbit-one" aria-hidden="true"><span></span></div>
+              <div class="orbit orbit-two" aria-hidden="true"><span></span></div>
+              <div class="core-shell" aria-hidden="true">
+                <div class="core-iris"><div class="core-slit"></div></div>
+                <div class="core-glow"></div>
+              </div>
+              <svg class="waveform" viewBox="0 0 340 82" aria-hidden="true" preserveAspectRatio="none">
+                <path d="M0 41 H25 L33 35 L41 47 L49 29 L57 52 L65 39 L74 43 L82 17 L90 60 L99 30 L107 48 L115 39 L124 44 L132 25 L140 55 L148 38 L157 45 L165 40 L174 20 L182 61 L190 29 L199 48 L207 36 L215 44 L224 30 L232 54 L240 41 L249 46 L257 24 L265 58 L273 35 L282 48 L290 40 L299 46 L307 27 L315 55 L323 35 L331 43 L340 41" />
+              </svg>
+              <div class="core-status"><span class="pulse-dot"></span><span id="core-state">СЛУШАЮ КОМАНДУ</span></div>
+              <div class="core-coordinates">KYIV // 50.4501° N&nbsp;&nbsp;30.5234° E</div>
+            </div>
+          </section>
+
+          <section class="console-section">
+            <div class="section-heading">
+              <div><p class="eyebrow">LIVE CHANNEL</p><h2>Диалоговый контур</h2></div>
+              <button class="clear-button" id="clear-chat" type="button">Очистить</button>
+            </div>
+            <div class="conversation" id="conversation" aria-live="polite" aria-label="Диалог с JARVIS">
+              <article class="message message-assistant">
+                <div class="message-avatar">J</div>
+                <div><p class="message-name">JARVIS <span>СЕЙЧАС</span></p><p>Ну что, шеф, я на месте. Можешь говорить как есть — разберём.</p></div>
+              </article>
+            </div>
+            <form class="command-dock" id="command-form">
+              <button class="mic-button" id="mic-button" type="button" aria-label="Сказать команду"><span class="mic-bars"><i></i><i></i><i></i><i></i><i></i></span></button>
+              <label class="command-input-wrap"><span class="sr-only">Команда для JARVIS</span><input id="command-input" autocomplete="off" placeholder="Скажи или напиши: «Запусти калькулятор»" maxlength="1200" /><span class="input-hint">ENTER</span></label>
+              <button class="send-button" type="submit" aria-label="Отправить команду"><span>↗</span></button>
+            </form>
+            <p class="input-note" id="input-note">Голосовое распознавание использует возможности браузера. Чувствительные действия всегда требуют подтверждения.</p>
+          </section>
+
+          <section class="quick-section" aria-label="Быстрые сценарии">
+            <div class="section-heading compact"><div><p class="eyebrow">QUICK ROUTINES</p><h2>Быстрые действия</h2></div><span class="section-caption">живые, но под контролем</span></div>
+            <div class="routine-grid">
+              <button class="routine-card warm" data-command="Покажи статус системы" type="button"><span class="routine-icon">◌</span><span><b>Пульс системы</b><small>нагрузка и аптайм</small></span><i>→</i></button>
+              <button class="routine-card cyan" data-command="Открой блокнот" type="button"><span class="routine-icon">✎</span><span><b>Быстрая мысль</b><small>открыть Блокнот</small></span><i>→</i></button>
+              <button class="routine-card purple" data-command="Найди погоду в Киеве" type="button"><span class="routine-icon">◒</span><span><b>Окно наружу</b><small>погода и поиск</small></span><i>→</i></button>
+              <button class="routine-card green" data-command="Добавь задачу: " type="button"><span class="routine-icon">✓</span><span><b>Зафиксировать</b><small>добавить задачу</small></span><i>→</i></button>
+            </div>
+          </section>
+        </div>
+
+        <div class="view" id="view-memory" data-view-panel="memory">
+          <section class="feature-header"><p class="eyebrow accent">LOCAL MEMORY</p><h1>Память, без утечек.</h1><p>Факты и заметки лежат локально в папке JARVIS. Скажи «Запомни: …» — и я сохраню только то, что ты явно попросил.</p></section>
+          <section class="memory-list panel" id="memory-list"></section>
+        </div>
+
+        <div class="view" id="view-automations" data-view-panel="automations">
+          <section class="feature-header"><p class="eyebrow accent">TASK QUEUE</p><h1>Очередь без бардака.</h1><p>Поручи мне задачу голосом или текстом. Выполненные пункты остаются в истории, а не испаряются.</p></section>
+          <section class="task-list panel" id="task-list"></section>
+        </div>
+
+        <div class="view" id="view-home" data-view-panel="home">
+          <section class="feature-header"><p class="eyebrow accent">HOME BRIDGE</p><h1>Дом — только по твоим правилам.</h1><p>JARVIS готов к Home Assistant: токен и адрес остаются в файле <code>.env</code>, а разрешённые действия задаются отдельным allowlist.</p></section>
+          <section class="home-card panel"><div class="home-orbit"><span></span></div><div><p class="eyebrow">HOME ASSISTANT</p><h2 id="home-status-title">Проверяю контур…</h2><p id="home-status-copy">Подключение не настроено.</p></div><button class="ghost-button" id="refresh-home" type="button">Обновить</button></section>
+        </div>
+      </section>
+
+      <aside class="right-rail" aria-label="Телеметрия">
+        <section class="rail-card system-card">
+          <div class="rail-heading"><span>СИСТЕМНЫЙ ПУЛЬС</span><i class="live-signal">LIVE</i></div>
+          <div class="system-meter"><div class="meter-gauge"><svg viewBox="0 0 100 52" aria-hidden="true"><path class="meter-track" d="M8 48 A42 42 0 0 1 92 48"/><path class="meter-value" id="meter-value" d="M8 48 A42 42 0 0 1 92 48"/></svg><b id="memory-percent">--%</b><span>ПАМЯТЬ</span></div></div>
+          <dl class="system-stats"><div><dt>CPU потоки</dt><dd id="cpu-cores">—</dd></div><div><dt>Аптайм</dt><dd id="uptime">—</dd></div><div><dt>Контур</dt><dd class="state-good">PRIVATE</dd></div></dl>
+        </section>
+        <section class="rail-card activity-card">
+          <div class="rail-heading"><span>ПОСЛЕДНИЙ СЛЕД</span><button id="refresh-data" type="button" aria-label="Обновить данные">↻</button></div>
+          <ol class="activity-list" id="activity-list"><li><span></span><div><b>Ядро готовится</b><small>сейчас</small></div></li></ol>
+        </section>
+        <section class="rail-card rules-card">
+          <div class="rail-heading"><span>ПРАВИЛО ЯДРА</span></div>
+          <p>JARVIS может <strong>думать</strong> быстро. Но <strong>действует</strong> только после твоего «да».</p>
+          <div class="rules-tags"><span>ALLOWLIST</span><span>LOCAL DATA</span><span>CONFIRM</span></div>
+        </section>
+      </aside>
+    </main>
+
+    <dialog class="confirm-dialog" id="confirm-dialog" aria-labelledby="confirm-title">
+      <form method="dialog" class="dialog-card">
+        <button class="dialog-close" value="cancel" aria-label="Закрыть">×</button>
+        <p class="eyebrow accent">SAFETY GATE</p>
+        <h2 id="confirm-title">Подтвердить действие?</h2>
+        <p id="confirm-detail">JARVIS ждёт твоего разрешения.</p>
+        <div class="dialog-actions"><button class="ghost-button" value="cancel" type="submit">Отмена</button><button class="primary-button" id="confirm-action" value="default" type="button">Подтвердить <span>→</span></button></div>
+      </form>
+    </dialog>
+
+    <dialog class="settings-dialog" id="settings-dialog" aria-labelledby="settings-title">
+      <form method="dialog" class="dialog-card settings-card" id="settings-form">
+        <button class="dialog-close" value="cancel" aria-label="Закрыть">×</button>
+        <p class="eyebrow accent">CONTROL ROOM</p>
+        <h2 id="settings-title">Как должен звучать JARVIS?</h2>
+        <label class="setting-field">Характер<select id="personality-select"><option value="classic">Классический JARVIS — спокойно</option><option value="street-kind">Добрый гопник — дерзко, но по-доброму</option><option value="street-max">Без фильтра — остро, но без токсичности</option></select></label>
+        <label class="setting-toggle"><input type="checkbox" id="voice-enabled" /><span></span>Озвучивать ответы</label>
+        <label class="setting-field">Модель облачного мозга<input id="model-input" maxlength="100" placeholder="Например, доступная вам модель" /><small>Ключ хранится только в <code>.env</code>, не в браузере.</small></label>
+        <div class="dialog-actions"><button class="ghost-button" value="cancel" type="submit">Отмена</button><button class="primary-button" id="save-settings" value="default" type="submit">Сохранить <span>→</span></button></div>
+      </form>
+    </dialog>
+
+    <template id="message-template"><article class="message"><div class="message-avatar"></div><div><p class="message-name"></p><p class="message-copy"></p></div></article></template>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
