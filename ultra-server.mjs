@@ -267,6 +267,9 @@ function systemPrompt() {
     'Будь конкретным и кратким, пока пользователь не просит деталей. Отвечай на смысл последней реплики, как живой близкий приятель, а не как справочник команд.',
     'Не перечисляй возможности, не говори, что сидишь или ждёшь команды, если тебя об этом не спросили. Не начинай каждую реплику с «Шеф» или одной и той же присказки.',
     'Пиши естественным разговорным русским без нарочито ломаных слов. Не копируй старые шаблоны из истории: формулируй мысль сам.',
+    'Если пользователь просит помочь с задачей, сначала пойми конечную цель. Дай следующий конкретный шаг или короткий план; задай один уточняющий вопрос только когда без него нельзя выбрать безопасное действие.',
+    'При диагностике и советах не отвечай одним общим вопросом: сразу назови 2–4 вероятные причины, предложи первый безопасный способ проверки и только затем при необходимости задай один конкретный вопрос. Начинай предложения с заглавной буквы.',
+    'Отделяй совет от действия на ПК: объяснять и планировать можно сразу, а фактическое действие выполняет только локальное ядро. Никогда не маскируй догадку под выполненный результат.',
     profileContext(),
   ].filter(Boolean).join('\n\n');
 }
@@ -305,7 +308,7 @@ function localBrainModels() {
 }
 
 function localModelTimeout(model) {
-  return model === 'qwen3:8b' ? 45_000 : 28_000;
+  return model === 'qwen3:8b' ? 90_000 : 45_000;
 }
 
 function isLegacyTemplateTurn(turn) {
@@ -346,8 +349,8 @@ async function askLocalBrain(message, maxTokens = 260, includeHistory = true) {
           messages: localConversation(message, includeHistory),
           stream: false,
           think: false,
-          keep_alive: '7m',
-          options: { temperature: 0.82, num_predict: maxTokens },
+          keep_alive: '15m',
+          options: { temperature: 0.68, top_p: 0.9, repeat_penalty: 1.08, num_ctx: 6144, num_predict: maxTokens },
         }),
         signal: AbortSignal.timeout(localModelTimeout(model)),
       });
@@ -369,6 +372,85 @@ async function askBrain(message, maxTokens = 260, includeHistory = true) {
   const localReply = await askLocalBrain(message, maxTokens, includeHistory);
   if (localReply || state.settings.provider === 'local') return localReply;
   return askCloud(message);
+}
+
+const LOCAL_PLAN_FORMAT = Object.freeze({
+  type: 'object',
+  properties: {
+    intent: { type: 'string', enum: ['chat', 'open_app', 'close_app', 'open_website', 'search_web', 'inspect_screen', 'click_visible', 'type_text', 'press_key', 'scroll', 'focus_window', 'remember', 'add_task', 'clarify'] },
+    target: { type: 'string' },
+    text: { type: 'string' },
+    key: { type: 'string' },
+    direction: { type: 'string', enum: ['', 'up', 'down'] },
+    question: { type: 'string' },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+  },
+  required: ['intent', 'target', 'text', 'key', 'direction', 'question', 'confidence'],
+  additionalProperties: false,
+});
+
+function looksLikeTaskRequest(message) {
+  return /^(?:будь добр[а]?[,.]?\s*|давай\s+|можешь(?:\s+ли)?\s+|пожалуйста[,.]?\s*|мне (?:нужно|надо)\s+|я хочу(?:\s*,?\s*чтобы\s+ты)?\s+|помоги(?:\s+мне)?\s+|сделай\s+|попробуй\s+|открой\s+|закрой\s+|запусти\s+|включи\s+|выключи\s+|найди\s+|поищи\s+|загугли\s+|покажи\s+|перейди\s+|нажми\s+|напиши\s+|введи\s+|запомни\s+|напомни\s+)/iu.test(clean(message, 1200));
+}
+function looksLikeAdviceRequest(message) {
+  return /(?:^|\s)(?:помоги(?:\s+мне)?\s+(?:разобраться|понять)|объясни|расскажи|почему|как\s+(?:мне\s+)?|что\s+делать|посоветуй)(?=$|\s|[,.!?])/iu.test(clean(message, 1200));
+}
+
+function operationFromLocalPlan(plan, originalMessage) {
+  if (!plan || Number(plan.confidence) < 0.72) return null;
+  const target = clean(plan.target, 240);
+  const text = clean(plan.text, 1000);
+  switch (plan.intent) {
+    case 'chat': return null;
+    case 'open_app': return target ? classify(`открой ${target}`) : null;
+    case 'close_app': return target ? classify(`закрой ${target}`) : null;
+    case 'open_website': return target ? (resolveWebsiteIntent(`открой ${target}`) || { kind: 'search', query: `${target} официальный сайт`, label: `Найти официальный сайт: ${target}`, risk: 'normal' }) : null;
+    case 'search_web': return (target || text) ? { kind: 'search', query: target || text, label: `Поиск: ${(target || text).slice(0, 90)}`, risk: 'normal' } : null;
+    case 'inspect_screen': return { kind: 'vision', prompt: originalMessage, actionText: '' };
+    case 'click_visible': return target ? { kind: 'vision', prompt: `${originalMessage}. Найди на текущем экране ясно видимый элемент, который точнее всего соответствует «${target}», и вызови click по его центру. Не утверждай, что уже нажал.`, actionText: '' } : null;
+    case 'type_text': return text ? { kind: 'control', action: 'TypeText', text, label: `Ввести текст: ${text.slice(0, 48)}${text.length > 48 ? '…' : ''}`, risk: /парол|password|пин|pin|код|card|карт/iu.test(text) ? 'sensitive' : 'normal' } : null;
+    case 'press_key': { const key = keyForSpokenKey(clean(plan.key || target, 18)); return key ? { kind: 'control', action: 'PressKey', key, label: `Нажать ${key}`, risk: 'normal' } : null; }
+    case 'scroll': { const down = plan.direction !== 'up'; return { kind: 'control', action: 'Scroll', amount: down ? -4 : 4, label: `Прокрутить ${down ? 'вниз' : 'вверх'}`, risk: 'normal' }; }
+    case 'focus_window': return target ? { kind: 'control', action: 'FocusWindow', title: target, label: `Активировать окно: ${target.slice(0, 70)}`, risk: 'normal' } : null;
+    case 'remember': return (text || target) ? { kind: 'remember', text: text || target } : null;
+    case 'add_task': return (text || target) ? { kind: 'task', text: text || target } : null;
+    case 'clarify': return { kind: 'clarify', question: clean(plan.question, 300) || 'Уточни, пожалуйста, что именно нужно сделать.' };
+    default: return null;
+  }
+}
+
+async function planLocalTask(message) {
+  if (state.settings.provider === 'openai') return null;
+  const prompt = [
+    'Ты безопасный маршрутизатор локального Windows-ассистента JARVIS.',
+    'Определи ОДИН следующий шаг, который прямо просит пользователь. Не выдумывай выполненных действий.',
+    'open_app/close_app — программы; open_website — только явно названный сайт; search_web — поиск; inspect_screen — посмотреть экран; click_visible — нажать видимый элемент; type_text/press_key/scroll/focus_window — управление; remember/add_task — память и задачи.',
+    'Если это разговор, совет, объяснение или задача без действия на ПК — intent=chat. Если цель действия неоднозначна — intent=clarify и один короткий вопрос.',
+    `Запрос: ${clean(message, 900)}`,
+  ].join('\n');
+  try {
+    const response = await fetch(OLLAMA_CHAT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3:8b',
+        messages: [{ role: 'user', content: prompt }],
+        format: LOCAL_PLAN_FORMAT,
+        stream: false,
+        think: false,
+        keep_alive: '15m',
+        options: { temperature: 0.05, top_p: 0.8, repeat_penalty: 1.05, num_ctx: 4096, num_predict: 180 },
+      }),
+      signal: AbortSignal.timeout(90_000),
+    });
+    if (!response.ok) throw new Error(`Локальный планировщик вернул ${response.status}`);
+    const payload = await response.json();
+    const plan = JSON.parse(payload?.message?.content || '{}');
+    return operationFromLocalPlan(plan, message);
+  } catch (error) {
+    await logEvent('local_planner_unavailable', `Планировщик qwen3:8b недоступен: ${error.message}`);
+    return null;
+  }
 }
 
 async function askLocalVision(prompt) {
@@ -719,6 +801,9 @@ async function execute(operation) {
 
 async function chat(message) {
   let operation = classify(message);
+  if (operation.kind === 'chat' && looksLikeTaskRequest(message) && !looksLikeAdviceRequest(message)) {
+    operation = await planLocalTask(message) || operation;
+  }
   let visionReply = null;
   if (operation.kind === 'vision') {
     try {
@@ -767,9 +852,19 @@ async function chat(message) {
     action = propose(operation);
     const proposalReply = await friendlyProposalReply(message, operation);
     reply = [visionReply, proposalReply].filter(Boolean).join('\n\n');
+  } else if (operation.kind === 'clarify') {
+    reply = operation.question;
   } else if (operation.kind === 'chat') {
     if (looksLikeActionRequest(message)) {
       reply = `${streetPrefix()} команду не разобрал и ничего не выполнял. Назови действие и цель чуть точнее — без вранья разберусь.`;
+    } else if (looksLikeAdviceRequest(message)) {
+      const advicePrompt = [
+        'Запрос пользователя: ' + clean(message, 500),
+        'Это просьба о совете или диагностике, а не команда управления компьютером.',
+        'Ответь по-русски как умный добрый друг: сразу дай 2–4 наиболее вероятные причины и первый безопасный шаг проверки.',
+        'Не ограничивайся встречным вопросом. В конце можешь задать один конкретный уточняющий вопрос. Не заявляй, что что-либо сделал на ПК.',
+      ].join('\n');
+      reply = await askBrain(advicePrompt, 360, false);
     } else {
       reply = await askBrain(message);
       if (reply && (isLegacyTemplateTurn({ role: 'assistant', text: reply }) || hasUnconfirmedActionClaim(reply))) {
