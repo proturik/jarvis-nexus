@@ -65,6 +65,7 @@ namespace JarvisNexus.DesktopShell
         private bool _hasRussianVoice;
         private bool _panelOpen;
         private bool _busy;
+        private bool _voiceConfirmationVisible;
         private bool _voiceSenseEnabled;
         private bool _visionSenseEnabled;
         private bool _senseSettingsWritable;
@@ -1457,6 +1458,7 @@ namespace JarvisNexus.DesktopShell
             }
 
             _pendingAction = new PendingAction(token, label, detail, risk);
+            _voiceConfirmationVisible = false;
             _actionTitleText.Text = "ТРЕБУЕТ ПОДТВЕРЖДЕНИЯ // " + label;
             _actionDetailText.Text = RiskCaption(risk) + " · "
                 + (string.IsNullOrWhiteSpace(detail) ? "Разрешённое локальным ядром действие." : detail)
@@ -1469,6 +1471,8 @@ namespace JarvisNexus.DesktopShell
         private void HideAction()
         {
             _pendingAction = null;
+            _voiceConfirmationVisible = false;
+            _confirmButton.Content = "ПОДТВЕРДИТЬ";
             _actionCard.Visibility = Visibility.Collapsed;
             UpdateControls();
         }
@@ -1621,6 +1625,27 @@ namespace JarvisNexus.DesktopShell
                 _lastSenseReply = reply;
                 _replyText.Text = (string.IsNullOrWhiteSpace(_lastSenseCommand) ? string.Empty : "ВЫ // " + _lastSenseCommand + "\n\n") + "JARVIS // " + reply;
                 SetStatus(string.Equals(activity, "awaiting-confirmation", StringComparison.OrdinalIgnoreCase) ? "CORE // ЖДУ ПОДТВЕРЖДЕНИЕ" : "CORE // ГОТОВО · ОТВЕЧАЮ");
+                changed = true;
+            }
+            var awaitingConfirmation = string.Equals(activity, "awaiting-confirmation", StringComparison.OrdinalIgnoreCase);
+            if (awaitingConfirmation && _pendingAction == null)
+            {
+                _voiceConfirmationVisible = true;
+                _actionTitleText.Text = "ГОЛОСОВОЕ ПОДТВЕРЖДЕНИЕ";
+                _actionDetailText.Text = string.IsNullOrWhiteSpace(reply)
+                    ? "JARVIS нашёл действие. Подтвердите его голосом в течение 30 секунд."
+                    : reply;
+                _confirmButton.Content = "СКАЖИ: ПОДТВЕРЖДАЮ";
+                _confirmButton.IsEnabled = false;
+                _actionCard.Visibility = Visibility.Visible;
+                SetStatus("CORE // ЖДУ: ПОДТВЕРЖДАЮ");
+                changed = true;
+            }
+            else if (_voiceConfirmationVisible && _pendingAction == null)
+            {
+                _voiceConfirmationVisible = false;
+                _confirmButton.Content = "ПОДТВЕРДИТЬ";
+                _actionCard.Visibility = Visibility.Collapsed;
                 changed = true;
             }
             if (changed && !_panelOpen)

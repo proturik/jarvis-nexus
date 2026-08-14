@@ -689,7 +689,7 @@ async function execute(operation) {
           // The program may still be starting; retry only within the bounded window.
         }
       }
-      return { message: `${app.label} запущен; окно ещё загружается.` };
+      throw new Error(`${app.label}: видимое окно не появилось за 4 секунды.`);
     }
     return { message: `${app.label} запущен.` };
   }
