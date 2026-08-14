@@ -420,10 +420,11 @@ class Speaker:
 class LocalTtsBridge:
     """Queues speech from the native Pet over a loopback-only tiny HTTP bridge."""
 
-    def __init__(self, speaker: Speaker, microphone_level_provider: Any, status_provider: Any) -> None:
+    def __init__(self, speaker: Speaker, microphone_level_provider: Any, status_provider: Any, vision_provider: Any) -> None:
         bridge_speaker = speaker
         bridge_microphone_level = microphone_level_provider
         bridge_status = status_provider
+        bridge_vision = vision_provider
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
@@ -451,7 +452,7 @@ class LocalTtsBridge:
                 self.wfile.write(body)
 
             def do_POST(self) -> None:
-                if self.path != "/speak":
+                if self.path not in {"/speak", "/vision"}:
                     self.send_error(404)
                     return
                 try:
@@ -459,21 +460,38 @@ class LocalTtsBridge:
                     if length < 1 or length > LOCAL_TTS_BODY_LIMIT:
                         raise ValueError("invalid body size")
                     payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    text = clean_text(payload.get("text"), 320) if isinstance(payload, dict) else ""
-                    if not text:
-                        raise ValueError("empty text")
-                    completion = bridge_speaker.say(text)
-                    if completion is None or not completion.wait(45.0):
-                        self.send_error(503)
-                        return
-                    body = b'{"ok":true}'
-                    self.send_response(202)
+                    if not isinstance(payload, dict):
+                        raise ValueError("invalid payload")
+                    if self.path == "/vision":
+                        prompt = clean_text(payload.get("prompt"), 400)
+                        if not prompt:
+                            raise ValueError("empty prompt")
+                        result = bridge_vision(prompt)
+                        body = json.dumps({"ok": True, **result}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                        self.send_response(200)
+                    else:
+                        text = clean_text(payload.get("text"), 320)
+                        if not text:
+                            raise ValueError("empty text")
+                        completion = bridge_speaker.say(text)
+                        if completion is None or not completion.wait(45.0):
+                            self.send_error(503)
+                            return
+                        body = b'{"ok":true}'
+                        self.send_response(202)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
                 except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
                     self.send_error(400)
+                except RuntimeError as error:
+                    body = json.dumps({"ok": False, "error": clean_text(error, 180)}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                    self.send_response(503)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
 
             def log_message(self, _format: str, *_args: Any) -> None:
                 return
@@ -796,10 +814,26 @@ class VisionWorker:
         self.speaker = speaker
         self.stop_event = stop_event
         self._fingerprint: bytes | None = None
+        self._inspection_lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="JarvisSenseVision", daemon=True)
 
     def start(self) -> None:
         self._thread.start()
+
+    def inspect(self, instruction: str) -> dict[str, Any]:
+        settings = self.store.read()
+        if settings["visionEnabled"] is not True:
+            raise RuntimeError("VISION выключен. Включи кнопку VISION // ON и повтори.")
+        prompt = clean_text(instruction, 400)
+        if not prompt:
+            raise RuntimeError("Не понял, что нужно посмотреть на экране.")
+        self.store.update_status(vision="looking", visionError="", activity="vision-looking", lastCommand=prompt, lastReply="")
+        with self._inspection_lock:
+            image, _changed, frame = self._capture_frame()
+            result = self._ask_local_vision_task(image, settings["visionModel"], prompt, frame)
+        answer = clean_text(result.get("answer"), 320) or "Не смог уверенно понять происходящее на экране."
+        self.store.update_status(vision="watching", visionError="", activity="responding", lastReply=answer, visionModel=settings["visionModel"])
+        return {"answer": answer, "action": result.get("action"), "frame": frame}
 
     def _run(self) -> None:
         next_capture = 0.0
@@ -820,12 +854,13 @@ class VisionWorker:
             next_capture = now + int(settings["visionIntervalSeconds"])
             try:
                 self.store.update_status(vision="looking", visionError="", visionModel=settings["visionModel"])
-                image_bytes, changed = self._capture_screen()
-                if not changed:
-                    self.store.update_status(vision="watching")
-                    last_state = "watching"
-                    continue
-                comment = self._ask_local_vision(image_bytes, settings["visionModel"])
+                with self._inspection_lock:
+                    image_bytes, changed, _frame = self._capture_frame()
+                    if not changed:
+                        self.store.update_status(vision="watching")
+                        last_state = "watching"
+                        continue
+                    comment = self._ask_local_vision(image_bytes, settings["visionModel"])
                 if self.store.read()["visionEnabled"] is True and self._is_useful_comment(comment):
                     self.speaker.say(comment, low_priority=True)
                 self.store.update_status(vision="watching", visionError="", visionModel=settings["visionModel"])
@@ -834,12 +869,14 @@ class VisionWorker:
                 self.store.update_status(vision="error", visionError=clean_text(error, 180), visionModel=settings["visionModel"])
                 last_state = "error"
 
-    def _capture_screen(self) -> tuple[bytes, bool]:
+    def _capture_frame(self) -> tuple[bytes, bool, dict[str, int]]:
         with mss.mss() as capture:
             monitor = capture.monitors[0]
             shot = capture.grab(monitor)
             image = Image.frombytes("RGB", shot.size, shot.rgb)
+        original_width, original_height = image.size
         image.thumbnail((1280, 720), Image.Resampling.LANCZOS)
+        image_width, image_height = image.size
         fingerprint = image.convert("L").resize((64, 36), Image.Resampling.BILINEAR).tobytes()
         changed = self._fingerprint is None
         if self._fingerprint is not None:
@@ -847,15 +884,70 @@ class VisionWorker:
             changed = delta >= 3.2
         self._fingerprint = fingerprint
         output = io.BytesIO()
-        image.save(output, format="JPEG", quality=68, optimize=True)
-        return output.getvalue(), changed
+        image.save(output, format="JPEG", quality=72, optimize=True)
+        frame = {
+            "left": int(monitor["left"]),
+            "top": int(monitor["top"]),
+            "width": int(original_width),
+            "height": int(original_height),
+            "imageWidth": int(image_width),
+            "imageHeight": int(image_height),
+        }
+        return output.getvalue(), changed, frame
+
+    @staticmethod
+    def _ask_local_vision_task(image: bytes, model: str, instruction: str, frame: dict[str, int]) -> dict[str, Any]:
+        prompt = (
+            "Ты локальное зрение JARVIS. Выполни запрос пользователя по одному свежему кадру экрана: " + instruction + "\n"
+            "Ответь СТРОГО одним JSON без markdown: {\"answer\":\"краткий честный ответ по-русски\",\"action\":null}. "
+            "Если пользователь просит нажать ясно видимую безопасную кнопку, action может быть только "
+            "{\"type\":\"click\",\"x\":целое,\"y\":целое,\"confidence\":0.0}. "
+            f"Координаты x/y укажи в пикселях этого изображения {frame['imageWidth']}x{frame['imageHeight']}. "
+            "Предлагай click только при confidence >= 0.88. Никогда не предлагай нажатие покупки, удаления, отправки, входа, пароля, платежа, установки или неизвестной кнопки. "
+            "Не выдумывай невидимое и не раскрывай личные данные."
+        )
+        response = post_json(
+            LOCAL_OLLAMA + "/api/chat",
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt, "images": [base64.b64encode(image).decode("ascii")]}],
+                "stream": False,
+                "think": False,
+                "keep_alive": 0,
+                "format": "json",
+                "options": {"temperature": 0.15, "num_predict": 220},
+            },
+            timeout=120,
+        )
+        message = response.get("message")
+        content = clean_text(message.get("content"), 1800) if isinstance(message, dict) else ""
+        try:
+            parsed = json.loads(content)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {"answer": content or "Не смог уверенно разобрать экран.", "action": None}
+        answer = clean_text(parsed.get("answer"), 320) if isinstance(parsed, dict) else ""
+        action = parsed.get("action") if isinstance(parsed, dict) else None
+        safe_action = None
+        if isinstance(action, dict) and clean_text(action.get("type"), 20).lower() == "click":
+            try:
+                x = int(action.get("x"))
+                y = int(action.get("y"))
+                confidence = float(action.get("confidence", 0.0))
+                if 0 <= x < frame["imageWidth"] and 0 <= y < frame["imageHeight"] and confidence >= 0.88:
+                    screen_x = frame["left"] + round(x * frame["width"] / frame["imageWidth"])
+                    screen_y = frame["top"] + round(y * frame["height"] / frame["imageHeight"])
+                    safe_action = {"type": "click", "x": screen_x, "y": screen_y, "confidence": round(confidence, 3)}
+            except (TypeError, ValueError, OverflowError):
+                safe_action = None
+        return {"answer": answer or "Вижу экран, но не уверен в безопасном действии.", "action": safe_action}
 
     @staticmethod
     def _ask_local_vision(image: bytes, model: str) -> str:
         prompt = (
             "Ты JARVIS, добрый умный игровой напарник. Посмотри на один текущий кадр экрана. "
-            "Ответь по-русски одной короткой фразой до 18 слов и комментируй только явно заметное событие. "
-            "Если кадр непонятный или в нём нет достойного комментария, ответь строго ТИШИНА. "
+            "Если явно видна игра, дай один короткий полезный тактический совет только по видимому: цель, уклонение, ресурс, позиция или опасность. "
+            "Вне игры коротко комментируй только действительно заметное событие. Ответь по-русски одной фразой до 18 слов. "
+            "Если кадр непонятный или полезного комментария нет, ответь строго ТИШИНА. "
             "Не придумывай факты, не упоминай, что получил изображение, и не раскрывай личные данные."
         )
         response = post_json(
@@ -1004,13 +1096,13 @@ def main() -> int:
     stop_event = threading.Event()
     speaker = Speaker(tts_model_path)
     voice = VoiceWorker(store, model_path, speaker, stop_event)
+    vision = VisionWorker(store, speaker, stop_event)
     tts_bridge: LocalTtsBridge | None = None
     try:
-        tts_bridge = LocalTtsBridge(speaker, lambda: voice.microphone_level, store.read_status)
+        tts_bridge = LocalTtsBridge(speaker, lambda: voice.microphone_level, store.read_status, vision.inspect)
         tts_bridge.start()
     except OSError:
         tts_bridge = None
-    vision = VisionWorker(store, speaker, stop_event)
     store.update_status(
         voice="off",
         voiceError="",

@@ -15,6 +15,7 @@ const PORT = Number.parseInt(process.env.JARVIS_ULTRA_PORT || '3791', 10);
 const BODY_LIMIT = 80 * 1024;
 const ACTION_LIFETIME = 3 * 60 * 1000;
 const OLLAMA_CHAT_URL = 'http://127.0.0.1:11434/api/chat';
+const LOCAL_VISION_URL = 'http://127.0.0.1:3793/vision';
 const CONTROL_SCRIPT = path.join(ROOT, 'windows-control', 'Invoke-NexusControl.ps1');
 const APP_DISCOVERY_SCRIPT = path.join(ROOT, 'windows-control', 'Find-NexusApp.ps1');
 const THEME_SCRIPT = path.join(ROOT, 'windows-theme', 'Sync-Nexus-Theme.ps1');
@@ -334,6 +335,22 @@ async function askBrain(message, maxTokens = 260, includeHistory = true) {
   return askCloud(message);
 }
 
+async function askLocalVision(prompt) {
+  const response = await fetch(LOCAL_VISION_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: clean(prompt, 400) }),
+    signal: AbortSignal.timeout(130_000),
+  });
+  let payload = null;
+  try { payload = await response.json(); } catch { payload = null; }
+  if (!response.ok || payload?.ok !== true) throw new Error(clean(payload?.error, 180) || 'Локальное зрение не ответило.');
+  return {
+    answer: clean(payload.answer, 500) || 'Не смог уверенно понять происходящее на экране.',
+    action: payload.action && typeof payload.action === 'object' ? payload.action : null,
+  };
+}
+
 async function friendlyConfirmedReply(message, result) {
   const prompt = [
     'Локальное ядро уже подтвердило факт действия: ' + clean(result.message, 220),
@@ -370,6 +387,8 @@ function classify(message) {
   const input = raw.toLocaleLowerCase('ru-RU');
   let match;
 
+  if ((match = raw.match(/^(?:посмотри|глянь)(?:\s+(?:на|что происходит на))?\s*(?:мой\s+)?экран(?:\s+и\s+(.+))?$/iu))) return { kind: 'vision', prompt: raw, actionText: clean(match[1], 300) };
+  if (/^(?:что (?:ты )?видишь|что происходит) на экране|^(?:опиши|проанализируй) экран|^помоги .{0,40}(?:на|с) экране/iu.test(input)) return { kind: 'vision', prompt: raw, actionText: '' };
   if ((match = raw.match(/^(?:запомни|помни)\s*[:,—-]?\s*(.+)$/iu))) return { kind: 'remember', text: clean(match[1], 600) };
   if ((match = raw.match(/^(?:добавь\s+)?(?:задачу|напоминание|напомни)\s*[:,—-]?\s*(.+)$/iu))) return { kind: 'task', text: clean(match[1], 600) };
   if ((match = raw.match(/^(?:меня зовут|зови меня)\s+(.+)$/iu))) return { kind: 'set_name', name: clean(match[1], 80) };
@@ -617,29 +636,51 @@ async function execute(operation) {
 
 async function chat(message) {
   let operation = classify(message);
+  let visionReply = null;
+  if (operation.kind === 'vision') {
+    try {
+      const vision = await askLocalVision(operation.prompt);
+      visionReply = vision.answer;
+      let planned = operation.actionText ? classify(operation.actionText) : { kind: 'vision_result' };
+      if (planned.kind === 'unsupported_app') planned = await resolveInstalledApp(planned.appName);
+      const actionable = ['control', 'app', 'discovered_app', 'close_app', 'search', 'theme'].includes(planned.kind);
+      if (actionable) {
+        operation = planned;
+      } else if (vision.action?.type === 'click' && Number.isInteger(vision.action.x) && Number.isInteger(vision.action.y)) {
+        operation = { kind: 'control', action: 'Click', x: vision.action.x, y: vision.action.y, button: 'Left', clickKind: 'Single', label: `VISION: нажать ${vision.action.x}, ${vision.action.y}`, risk: 'sensitive' };
+      } else {
+        operation = { kind: 'vision_result' };
+      }
+    } catch (error) {
+      visionReply = `${streetPrefix()} не смог посмотреть на экран: ${clean(error?.message, 220) || 'локальное зрение недоступно.'}`;
+      operation = { kind: 'vision_result' };
+    }
+  }
   if (operation.kind === 'unsupported_app') operation = await resolveInstalledApp(operation.appName);
   await discoverProfileFact(message);
   await saveConversation('user', message);
   if (['remember', 'task', 'set_name'].includes(operation.kind)) await applyDirect(operation);
 
   let action = null;
-  let reply = null;
+  let reply = visionReply;
   if (['app', 'discovered_app', 'close_app'].includes(operation.kind) && operation.risk === 'normal' && state.settings.alwaysConfirm === false) {
     try {
       const result = await execute(operation);
-      reply = await friendlyConfirmedReply(message, result);
-      reply ||= `${streetPrefix()} ${result.message}`;
+      const confirmedReply = await friendlyConfirmedReply(message, result) || `${streetPrefix()} ${result.message}`;
+      reply = [visionReply, confirmedReply].filter(Boolean).join('\n\n');
       await logEvent('action_done', result.message);
     } catch (error) {
       const reason = clean(error && error.message, 240) || 'Windows не подтвердил действие.';
-      reply = operation.kind === 'close_app'
+      const failureReply = operation.kind === 'close_app'
         ? `${streetPrefix()} не закрыл ${operation.title}: ${reason}`
         : `${streetPrefix()} не открыл ${operation.label.replace(/^Открыть\s+/u, '')}: ${reason}`;
+      reply = [visionReply, failureReply].filter(Boolean).join('\n\n');
       await logEvent('action_failed', reason);
     }
   } else if (['control', 'app', 'discovered_app', 'close_app', 'search', 'theme'].includes(operation.kind)) {
     action = propose(operation);
-    reply = await friendlyProposalReply(message, operation);
+    const proposalReply = await friendlyProposalReply(message, operation);
+    reply = [visionReply, proposalReply].filter(Boolean).join('\n\n');
   } else if (operation.kind === 'chat') {
     reply = await askBrain(message);
     if (reply && (isLegacyTemplateTurn({ role: 'assistant', text: reply }) || hasUnconfirmedActionClaim(reply))) {

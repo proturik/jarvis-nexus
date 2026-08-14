@@ -1595,6 +1595,7 @@ namespace JarvisNexus.DesktopShell
         private static string ActivityCaption(string message)
         {
             var input = (message ?? string.Empty).Trim().ToLowerInvariant();
+            if (input.StartsWith("посмотри", StringComparison.Ordinal) || input.StartsWith("глянь", StringComparison.Ordinal) || input.Contains("на экране")) return "VISION // СМОТРЮ · АНАЛИЗИРУЮ";
             if (input.StartsWith("закрой", StringComparison.Ordinal) || input.StartsWith("закрыть", StringComparison.Ordinal) || input.StartsWith("close", StringComparison.Ordinal)) return "CORE // ИЩУ ОКНО · ЗАКРЫВАЮ";
             if (input.StartsWith("открой", StringComparison.Ordinal) || input.StartsWith("запусти", StringComparison.Ordinal) || input.StartsWith("open", StringComparison.Ordinal)) return "CORE // ИЩУ ПРИЛОЖЕНИЕ · ЗАПУСКАЮ";
             if (IsComputerCommand(message)) return "CORE // ВЫПОЛНЯЮ · ПРОВЕРЯЮ";
