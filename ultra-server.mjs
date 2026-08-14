@@ -395,13 +395,28 @@ function classify(message) {
   if (/^(?:отмени|назад действие)$/iu.test(input)) return { kind: 'control', action: 'Hotkey', keys: 'CTRL+Z', label: 'Нажать Ctrl + Z', risk: 'normal' };
   if (/^(?:переключи окно|следующее окно)$/iu.test(input)) return { kind: 'control', action: 'Hotkey', keys: 'ALT+TAB', label: 'Переключить окно (Alt + Tab)', risk: 'normal' };
   if (/^(?:закрой окно|закрыть окно)$/iu.test(input)) return { kind: 'control', action: 'Hotkey', keys: 'ALT+F4', label: 'Закрыть активное окно (Alt + F4)', risk: 'sensitive' };
+  if (/^(?:закрой|закрыть|выключи|останови|close)(?=$|\s|[,.!?])/iu.test(input)) {
+    const requested = clean(raw.replace(/^(?:закрой|закрыть|выключи|останови|close)\s*/iu, ''), 80) || 'это приложение';
+    const aliases = [
+      ['Discord', /дис\s*корд|дискомфорт|discord/iu],
+      ['Steam', /стим|с\s*тим|steam/iu],
+      ['Google Chrome', /google chrome|chrome|хром|гугл хром/iu],
+      ['Telegram', /телеграм|telegram/iu],
+      ['Spotify', /спотифай|spotify/iu],
+      ['Firefox', /фаерфокс|firefox/iu],
+      ['Opera', /опера|opera/iu],
+    ];
+    const known = aliases.find(([, expression]) => expression.test(requested));
+    const title = known?.[0] || requested;
+    return { kind: 'close_app', title, label: `Закрыть ${title}`, risk: known ? 'normal' : 'sensitive' };
+  }
   if ((match = raw.match(/^(?:переключись|активируй окно)\s+(.+)$/iu))) return { kind: 'control', action: 'FocusWindow', title: clean(match[1], 120), label: `Активировать окно: ${clean(match[1], 70)}`, risk: 'normal' };
   if (/что (?:сейчас )?(?:открыто|на экране)|покажи окна/iu.test(input)) return { kind: 'control', action: 'ListWindows', label: 'Прочитать названия открытых окон', risk: 'sensitive' };
   if (/синхронизируй (?:тему )?(?:windows|виндовс)|тема nexus|примени тему/iu.test(input)) return { kind: 'theme', mode: 'Apply', label: 'Синхронизировать Windows с NEXUS', risk: 'attention' };
   if (/верни (?:тему|оформление)|откати тему|восстанови тему/iu.test(input)) return { kind: 'theme', mode: 'Restore', label: 'Вернуть прежнюю тему Windows', risk: 'attention' };
   if (/(?:^|\s)(?:статус|состояние|диагностик|пульс системы)(?=$|\s|[,.!?])/iu.test(input)) return { kind: 'status' };
   if (/^(?:открой|запусти|включи|open)(?=$|\s|[,.!?])/iu.test(input)) {
-    const aliases = [['calculator', /калькулятор|calc/iu], ['discord', /дис\s*корд|discord/iu], ['notepad', /блокнот|notepad/iu], ['files', /проводник|файлы|папк/iu], ['settings', /параметр|настройки windows/iu], ['vscode', /vscode|visual studio code|код/iu]];
+    const aliases = [['calculator', /калькулятор|calc/iu], ['discord', /дис\s*корд|дискомфорт|discord/iu], ['notepad', /блокнот|notepad/iu], ['files', /проводник|файлы|папк/iu], ['settings', /параметр|настройки windows/iu], ['vscode', /vscode|visual studio code|код/iu]];
     const app = aliases.find(([, expression]) => expression.test(input))?.[0];
     if (app) return { kind: 'app', app, label: `Открыть ${APP_CATALOG[app].label}`, risk: 'normal' };
     return { kind: 'unsupported_app', appName: clean(raw.replace(/^(?:открой|запусти|включи|open)\s*/iu, ''), 80) || 'это приложение' };
@@ -478,7 +493,9 @@ function propose(operation) {
       ? 'Изменятся только личные настройки Windows; текущие значения уже защищены резервной копией.'
       : ['app', 'discovered_app'].includes(operation.kind)
         ? 'Откроется безопасный ярлык программы из меню «Пуск».'
-        : 'Откроется поиск в браузере по умолчанию.';
+        : operation.kind === 'close_app'
+          ? 'Windows отправит обычный запрос на закрытие найденного окна и проверит, что оно исчезло.'
+          : 'Откроется поиск в браузере по умолчанию.';
   return { token, label: operation.label, detail, risk: operation.risk, expiresAt };
 }
 
@@ -497,7 +514,7 @@ function run(command, args, timeoutMs = 18_000) {
 function discoveryQuery(name) {
   const aliases = {
     'steam': 'steam', 'стим': 'steam', 'с тим': 'steam',
-    'discord': 'discord', 'дискорд': 'discord', 'дис корд': 'discord',
+    'discord': 'discord', 'дискорд': 'discord', 'дис корд': 'discord', 'дискомфорт': 'discord',
     'chrome': 'chrome', 'google chrome': 'google chrome', 'хром': 'chrome', 'гугл хром': 'chrome', 'телеграм': 'telegram',
     'спотифай': 'spotify', 'опера': 'opera', 'фаерфокс': 'firefox', 'зум': 'zoom',
     'обс': 'obs', 'эпик': 'epic games', 'батлнет': 'battle net',
@@ -513,10 +530,10 @@ async function resolveInstalledApp(appName) {
     const output = await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', APP_DISCOVERY_SCRIPT, '-Action', 'Resolve', '-Name', discoveryQuery(requestedName)], 12_000);
     const payload = JSON.parse(output.trim());
     const candidates = Array.isArray(payload.candidates) ? payload.candidates
-      .map((item) => ({ label: clean(item?.label, 100), shortcut: String(item?.shortcut || '') }))
+      .map((item) => ({ label: clean(item?.label, 100), shortcut: String(item?.shortcut || ''), score: Number(item?.score || 0) }))
       .filter((item) => item.label && path.isAbsolute(item.shortcut) && path.extname(item.shortcut).toLocaleLowerCase('en-US') === '.lnk')
       .slice(0, 5) : [];
-    if (candidates.length === 1) {
+    if (candidates.length === 1 || (candidates.length > 1 && candidates[0].score >= 85 && candidates[0].score - candidates[1].score >= 10)) {
       const candidate = candidates[0];
       return { kind: 'discovered_app', label: `Открыть ${candidate.label}`, appLabel: candidate.label, shortcut: candidate.shortcut, risk: 'normal' };
     }
@@ -558,6 +575,10 @@ async function executeControl(operation) {
 
 async function execute(operation) {
   if (operation.kind === 'control') return executeControl(operation);
+  if (operation.kind === 'close_app') {
+    const result = await executeControl({ kind: 'control', action: 'CloseWindow', title: operation.title, label: operation.label, risk: operation.risk });
+    return { message: result.message.replace(/^Сделано:\s*/u, '') };
+  }
   if (operation.kind === 'discovered_app') {
     const output = await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', APP_DISCOVERY_SCRIPT, '-Action', 'Launch', '-Shortcut', operation.shortcut], 18_000);
     const result = JSON.parse(output.trim());
@@ -603,18 +624,20 @@ async function chat(message) {
 
   let action = null;
   let reply = null;
-  if (['app', 'discovered_app'].includes(operation.kind) && operation.risk === 'normal' && state.settings.alwaysConfirm === false) {
+  if (['app', 'discovered_app', 'close_app'].includes(operation.kind) && operation.risk === 'normal' && state.settings.alwaysConfirm === false) {
     try {
       const result = await execute(operation);
       reply = await friendlyConfirmedReply(message, result);
       reply ||= `${streetPrefix()} ${result.message}`;
       await logEvent('action_done', result.message);
     } catch (error) {
-      const reason = clean(error && error.message, 240) || 'Windows не подтвердил запуск.';
-      reply = `${streetPrefix()} не открыл ${operation.label.replace(/^Открыть\s+/u, '')}: ${reason}`;
+      const reason = clean(error && error.message, 240) || 'Windows не подтвердил действие.';
+      reply = operation.kind === 'close_app'
+        ? `${streetPrefix()} не закрыл ${operation.title}: ${reason}`
+        : `${streetPrefix()} не открыл ${operation.label.replace(/^Открыть\s+/u, '')}: ${reason}`;
       await logEvent('action_failed', reason);
     }
-  } else if (['control', 'app', 'discovered_app', 'search', 'theme'].includes(operation.kind)) {
+  } else if (['control', 'app', 'discovered_app', 'close_app', 'search', 'theme'].includes(operation.kind)) {
     action = propose(operation);
     reply = await friendlyProposalReply(message, operation);
   } else if (operation.kind === 'chat') {

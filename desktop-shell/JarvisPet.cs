@@ -83,6 +83,8 @@ namespace JarvisNexus.DesktopShell
         private ScaleTransform _hubScale;
         private bool _visualPollBusy;
         private string _coreVisualState = "idle";
+        private string _lastSenseCommand = string.Empty;
+        private string _lastSenseReply = string.Empty;
 
         public JarvisPetWindow()
         {
@@ -1355,8 +1357,8 @@ namespace JarvisNexus.DesktopShell
 
             SetBusy(true);
             HideAction();
-            SetStatus("CORE // ЗАПРОС");
-            _replyText.Text = "JARVIS обрабатывает команду...";
+            SetStatus(ActivityCaption(message));
+            _replyText.Text = "ВЫ // " + message + "\n\nJARVIS // выполняю и проверяю...";
 
             try
             {
@@ -1370,9 +1372,10 @@ namespace JarvisNexus.DesktopShell
                 }
 
                 _commandBox.Clear();
-                _replyText.Text = reply;
-                SetStatus("CORE // ОТВЕТ");
-                PresentAction(GetObject(response, "action"));
+                _replyText.Text = "ВЫ // " + message + "\n\nJARVIS // " + reply;
+                var responseAction = GetObject(response, "action");
+                PresentAction(responseAction);
+                SetStatus(responseAction != null ? "CORE // ЖДУ ПОДТВЕРЖДЕНИЕ" : (IsComputerCommand(message) ? "CORE // ГОТОВО · ПРОВЕРЕНО" : "JARVIS // ОТВЕЧАЮ"));
                 Speak(reply);
             }
             catch (Exception exception)
@@ -1489,7 +1492,8 @@ namespace JarvisNexus.DesktopShell
                     }
 
                     var payload = ParseJsonObject(await response.Content.ReadAsStringAsync());
-                    UpdateCoreVisualState(GetBoolean(payload, "speaking"), GetDouble(payload, "microphoneLevel"));
+                    ApplySenseFeed(payload);
+                    UpdateCoreVisualState(GetBoolean(payload, "speaking"), GetDouble(payload, "microphoneLevel"), GetString(payload, "activity"));
                 }
             }
             catch (Exception)
@@ -1502,7 +1506,7 @@ namespace JarvisNexus.DesktopShell
             }
         }
 
-        private void UpdateCoreVisualState(bool speaking, double microphoneLevel)
+        private void UpdateCoreVisualState(bool speaking, double microphoneLevel, string activity = null)
         {
             if (_hubScale == null || _microphoneActivityRing == null || _replyActivityRing == null || _thinkingRing == null)
             {
@@ -1510,7 +1514,7 @@ namespace JarvisNexus.DesktopShell
             }
 
             microphoneLevel = Math.Max(0.0, Math.Min(1.0, microphoneLevel));
-            var state = speaking ? "speaking" : (microphoneLevel > 0.055 ? "listening" : (_busy ? "thinking" : "idle"));
+            var state = speaking ? "speaking" : (microphoneLevel > 0.055 ? "listening" : (_busy || string.Equals(activity, "processing", StringComparison.OrdinalIgnoreCase) ? "thinking" : "idle"));
             _microphoneActivityRing.Opacity = state == "listening" ? 0.18 + (microphoneLevel * 0.82) : 0.0;
             _microphoneActivityScale.ScaleX = 1.0 + (microphoneLevel * 0.16);
             _microphoneActivityScale.ScaleY = 1.0 + (microphoneLevel * 0.16);
@@ -1577,9 +1581,63 @@ namespace JarvisNexus.DesktopShell
             _confirmButton.IsEnabled = !_busy && _pendingAction != null;
         }
 
+        private static bool IsComputerCommand(string message)
+        {
+            var input = (message ?? string.Empty).Trim().ToLowerInvariant();
+            var prefixes = new[] { "открой", "запусти", "включи", "open", "закрой", "закрыть", "выключи", "close", "нажми", "напиши", "введи", "клик", "перемести", "прокрути", "найди" };
+            foreach (var prefix in prefixes)
+            {
+                if (input == prefix || input.StartsWith(prefix + " ", StringComparison.Ordinal)) return true;
+            }
+            return false;
+        }
+
+        private static string ActivityCaption(string message)
+        {
+            var input = (message ?? string.Empty).Trim().ToLowerInvariant();
+            if (input.StartsWith("закрой", StringComparison.Ordinal) || input.StartsWith("закрыть", StringComparison.Ordinal) || input.StartsWith("close", StringComparison.Ordinal)) return "CORE // ИЩУ ОКНО · ЗАКРЫВАЮ";
+            if (input.StartsWith("открой", StringComparison.Ordinal) || input.StartsWith("запусти", StringComparison.Ordinal) || input.StartsWith("open", StringComparison.Ordinal)) return "CORE // ИЩУ ПРИЛОЖЕНИЕ · ЗАПУСКАЮ";
+            if (IsComputerCommand(message)) return "CORE // ВЫПОЛНЯЮ · ПРОВЕРЯЮ";
+            return "JARVIS // ДУМАЮ НАД ОТВЕТОМ";
+        }
+
+        private void ApplySenseFeed(Dictionary<string, object> payload)
+        {
+            var command = GetString(payload, "lastCommand");
+            var reply = GetString(payload, "lastReply");
+            var activity = GetString(payload, "activity");
+            var changed = false;
+            if (!string.IsNullOrWhiteSpace(command) && !string.Equals(command, _lastSenseCommand, StringComparison.Ordinal))
+            {
+                _lastSenseCommand = command;
+                _lastSenseReply = string.Empty;
+                _replyText.Text = "ВЫ // " + command + "\n\nJARVIS // выполняю и проверяю...";
+                SetStatus(ActivityCaption(command));
+                changed = true;
+            }
+            if (!string.IsNullOrWhiteSpace(reply) && !string.Equals(reply, _lastSenseReply, StringComparison.Ordinal))
+            {
+                _lastSenseReply = reply;
+                _replyText.Text = (string.IsNullOrWhiteSpace(_lastSenseCommand) ? string.Empty : "ВЫ // " + _lastSenseCommand + "\n\n") + "JARVIS // " + reply;
+                SetStatus(string.Equals(activity, "awaiting-confirmation", StringComparison.OrdinalIgnoreCase) ? "CORE // ЖДУ ПОДТВЕРЖДЕНИЕ" : "CORE // ГОТОВО · ОТВЕЧАЮ");
+                changed = true;
+            }
+            if (changed && !_panelOpen)
+            {
+                ToggleCommandPanel();
+            }
+        }
+
         private void SetStatus(string text)
         {
             _statusText.Text = text;
+            _statusText.Foreground = text.IndexOf("ОШИБ", StringComparison.OrdinalIgnoreCase) >= 0
+                ? OrangeBrush
+                : text.IndexOf("ГОТОВО", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? GreenBrush
+                    : text.IndexOf("ДУМАЮ", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("ВЫПОЛН", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? PurpleBrush
+                        : CyanSoftBrush;
         }
 
         private void ShowError(string message)

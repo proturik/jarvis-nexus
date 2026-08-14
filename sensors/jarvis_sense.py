@@ -272,6 +272,16 @@ class SettingsStore:
                 # Status must never break the companion or overwrite settings.
                 pass
 
+    def read_status(self) -> dict[str, Any]:
+        with self._write_lock:
+            try:
+                if not self.status_path.is_file():
+                    return {}
+                value = json.loads(self.status_path.read_text(encoding="utf-8-sig"))
+                return value if isinstance(value, dict) else {}
+            except (OSError, ValueError):
+                return {}
+
 
 class Speaker:
     """Uses local Silero neural TTS, with Windows SAPI as a safe fallback."""
@@ -410,21 +420,28 @@ class Speaker:
 class LocalTtsBridge:
     """Queues speech from the native Pet over a loopback-only tiny HTTP bridge."""
 
-    def __init__(self, speaker: Speaker, microphone_level_provider: Any) -> None:
+    def __init__(self, speaker: Speaker, microphone_level_provider: Any, status_provider: Any) -> None:
         bridge_speaker = speaker
         bridge_microphone_level = microphone_level_provider
+        bridge_status = status_provider
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
                 if self.path != "/state":
                     self.send_error(404)
                     return
+                status = bridge_status()
                 body = json.dumps(
                     {
                         "speaking": bridge_speaker.speaking,
                         "microphoneLevel": round(float(bridge_microphone_level()), 3),
                         "engine": bridge_speaker.engine,
+                        "voice": clean_text(status.get("voice"), 32),
+                        "activity": clean_text(status.get("activity"), 40),
+                        "lastCommand": clean_text(status.get("lastCommand"), 160),
+                        "lastReply": clean_text(status.get("lastReply"), 320),
                     },
+                    ensure_ascii=False,
                     separators=(",", ":"),
                 ).encode("utf-8")
                 self.send_response(200)
@@ -733,7 +750,8 @@ class VoiceWorker:
             try:
                 callback(*args)
             except Exception as error:
-                self.store.update_status(voice="error", voiceError=clean_text(error, 180))
+                error_text = clean_text(error, 180)
+                self.store.update_status(voice="error", voiceError=error_text, activity="error", lastReply=error_text)
                 self.speaker.say("Не смог выполнить запрос локально.")
             finally:
                 self._busy = False
@@ -743,6 +761,8 @@ class VoiceWorker:
         threading.Thread(target=work, name="JarvisSenseVoiceCommand", daemon=True).start()
 
     def _send_command(self, command: str) -> None:
+        display_command = clean_text(command, 160)
+        self.store.update_status(activity="processing", lastCommand=display_command, lastReply="")
         response = post_json(LOCAL_JARVIS + "/api/chat", {"message": command}, timeout=75)
         action = response.get("action")
         reply = clean_text(response.get("reply"), 320)
@@ -750,9 +770,12 @@ class VoiceWorker:
             self._pending_action = action
             self._pending_until = time.monotonic() + 30.0
             label = clean_text(action.get("label"), 110) or "действие"
-            self.speaker.say("Есть действие: " + label + ". Скажи подтверждаю или отмена в течение тридцати секунд.")
+            prompt = "Есть действие: " + label + ". Скажи подтверждаю или отмена в течение тридцати секунд."
+            self.store.update_status(activity="awaiting-confirmation", lastReply=prompt)
+            self.speaker.say(prompt)
             return
         if reply:
+            self.store.update_status(activity="responding", lastReply=reply)
             self.speaker.say(reply)
 
     def _execute_pending(self, action: dict[str, Any]) -> None:
@@ -763,6 +786,7 @@ class VoiceWorker:
         message = clean_text(response.get("message"), 320)
         if response.get("ok") is not True or not message:
             raise RuntimeError(clean_text(response.get("error"), 180) or "Ядро не подтвердило действие.")
+        self.store.update_status(activity="responding", lastReply=message)
         self.speaker.say(message)
 
 
@@ -982,7 +1006,7 @@ def main() -> int:
     voice = VoiceWorker(store, model_path, speaker, stop_event)
     tts_bridge: LocalTtsBridge | None = None
     try:
-        tts_bridge = LocalTtsBridge(speaker, lambda: voice.microphone_level)
+        tts_bridge = LocalTtsBridge(speaker, lambda: voice.microphone_level, store.read_status)
         tts_bridge.start()
     except OSError:
         tts_bridge = None

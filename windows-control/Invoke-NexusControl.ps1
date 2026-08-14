@@ -91,6 +91,55 @@ function Write-Result([hashtable]$Data) {
     $Data | ConvertTo-Json -Compress -Depth 5
 }
 
+function Normalize-NexusWindowName([string]$Value) {
+    $normalized = ([string]$Value).ToLowerInvariant()
+    $normalized = [regex]::Replace($normalized, '[^\p{L}\p{Nd}]+', ' ')
+    return [regex]::Replace($normalized, '\s+', ' ').Trim()
+}
+
+function Get-NexusWindowDistance([string]$Left, [string]$Right) {
+    if ($Left -eq $Right) { return 0 }
+    if (-not $Left) { return $Right.Length }
+    if (-not $Right) { return $Left.Length }
+    $previous = 0..$Right.Length
+    for ($i = 1; $i -le $Left.Length; $i++) {
+        $current = New-Object int[] ($Right.Length + 1)
+        $current[0] = $i
+        for ($j = 1; $j -le $Right.Length; $j++) {
+            $cost = if ($Left[$i - 1] -eq $Right[$j - 1]) { 0 } else { 1 }
+            $current[$j] = [Math]::Min([Math]::Min($current[$j - 1] + 1, $previous[$j] + 1), $previous[$j - 1] + $cost)
+        }
+        $previous = $current
+    }
+    return $previous[$Right.Length]
+}
+
+function Get-NexusWindowScore([string]$Query, [string]$Candidate) {
+    if (-not $Candidate) { return 0 }
+    if ($Query -eq $Candidate) { return 100 }
+    if ($Candidate.StartsWith($Query) -or $Query.StartsWith($Candidate)) { return 94 }
+    if ($Candidate.Contains($Query) -or $Query.Contains($Candidate)) { return 88 }
+    $longest = [Math]::Max($Query.Length, $Candidate.Length)
+    if ($longest -lt 4) { return 0 }
+    $similarity = 1.0 - ((Get-NexusWindowDistance $Query $Candidate) / $longest)
+    if ($similarity -ge 0.72) { return [int]($similarity * 84) }
+    return 0
+}
+
+function Resolve-NexusWindow([string]$Query) {
+    $normalized = Normalize-NexusWindowName $Query
+    if (-not $normalized) { throw 'Window title is required.' }
+    $ranked = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle } | ForEach-Object {
+        $titleScore = Get-NexusWindowScore $normalized (Normalize-NexusWindowName $_.MainWindowTitle)
+        $processScore = Get-NexusWindowScore $normalized (Normalize-NexusWindowName $_.ProcessName)
+        [pscustomobject]@{ Process = $_; Score = [Math]::Max($titleScore, $processScore) }
+    } | Where-Object { $_.Score -ge 60 } | Sort-Object Score -Descending)
+    if ($ranked.Count -eq 0) { throw "Window not found: $Query" }
+    if ($ranked.Count -gt 1 -and $ranked[0].Score -lt 88 -and ($ranked[0].Score - $ranked[1].Score) -lt 8) {
+        throw "Several windows match '$Query': $($ranked[0].Process.MainWindowTitle); $($ranked[1].Process.MainWindowTitle)"
+    }
+    return $ranked[0].Process
+}
 function Test-ScreenPoint([int]$PointX, [int]$PointY) {
     $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
     if ($PointX -lt $screen.Left -or $PointX -ge ($screen.Left + $screen.Width) -or $PointY -lt $screen.Top -or $PointY -ge ($screen.Top + $screen.Height)) {
@@ -173,24 +222,20 @@ try {
         }
         'FocusWindow' {
             if ([string]::IsNullOrWhiteSpace($Title) -or $Title.Length -gt 120) { throw 'Window title is required and limited to 120 characters.' }
-            $safeTitle = [WildcardPattern]::Escape($Title)
-            $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$safeTitle*" } | Select-Object -First 1
-            if (-not $target) { throw "Window not found: $Title" }
+            $target = Resolve-NexusWindow $Title
             if (-not [NexusInput]::SetForegroundWindow($target.MainWindowHandle)) { throw "Windows did not allow focusing: $($target.MainWindowTitle)" }
             Write-Result @{ title = $target.MainWindowTitle; process = $target.ProcessName }
         }
         'CloseWindow' {
             if ([string]::IsNullOrWhiteSpace($Title) -or $Title.Length -gt 120) { throw 'Window title is required and limited to 120 characters.' }
-            $safeTitle = [WildcardPattern]::Escape($Title)
-            $target = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$safeTitle*" } | Select-Object -First 1
-            if (-not $target) { throw "Window not found: $Title" }
+            $target = Resolve-NexusWindow $Title
             $closedTitle = $target.MainWindowTitle
             $processName = $target.ProcessName
             if (-not $target.CloseMainWindow()) { throw "Windows did not accept a close request for: $closedTitle" }
             $deadline = [DateTime]::UtcNow.AddSeconds(6)
             do {
                 Start-Sleep -Milliseconds 200
-                $remaining = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$safeTitle*" } | Select-Object -First 1
+                $remaining = Get-Process -Id $target.Id -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
             } while ($remaining -and [DateTime]::UtcNow -lt $deadline)
             if ($remaining) { throw "Window is still open: $($remaining.MainWindowTitle)" }
             Write-Result @{ title = $closedTitle; process = $processName; closed = $true }
