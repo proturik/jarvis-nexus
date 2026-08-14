@@ -40,6 +40,7 @@ WAKE_PATTERN = re.compile(r"\b(?:джарвис|джервис|жарвис|jarv
 CONFIRM_PATTERN = re.compile(r"\b(?:да|подтверждаю|подтверди|выполняй|делай)\b", re.IGNORECASE)
 CANCEL_PATTERN = re.compile(r"\b(?:нет|отмена|отмени|не надо|стоп)\b", re.IGNORECASE)
 DEFAULT_VISION_MODEL = "qwen3-vl:4b-instruct"
+ACTION_VISION_MODEL = "qwen3-vl:8b-instruct"
 LEGACY_THINKING_VISION_MODELS = {"qwen3-vl:4b", "qwen3-vl:4b-thinking"}
 NEURAL_TTS_SPEAKER = "xenia"
 NEURAL_TTS_SAMPLE_RATE = 48_000
@@ -830,9 +831,17 @@ class VisionWorker:
         self.store.update_status(vision="looking", visionError="", activity="vision-looking", lastCommand=prompt, lastReply="")
         with self._inspection_lock:
             image, _changed, frame = self._capture_frame()
-            result = self._ask_local_vision_task(image, settings["visionModel"], prompt, frame)
+            action_requested = re.search(r"(?:нажми|клик|click|press|выбери|включи|запусти|поставь)", prompt, re.IGNORECASE) is not None
+            model = ACTION_VISION_MODEL if action_requested else settings["visionModel"]
+            try:
+                result = self._ask_local_vision_task(image, model, prompt, frame)
+            except Exception:
+                if model == settings["visionModel"]:
+                    raise
+                model = settings["visionModel"]
+                result = self._ask_local_vision_task(image, model, prompt, frame)
         answer = clean_text(result.get("answer"), 320) or "Не смог уверенно понять происходящее на экране."
-        self.store.update_status(vision="watching", visionError="", activity="responding", lastReply=answer, visionModel=settings["visionModel"])
+        self.store.update_status(vision="watching", visionError="", activity="responding", lastReply=answer, visionModel=model)
         return {"answer": answer, "action": result.get("action"), "frame": frame}
 
     def _run(self) -> None:
@@ -897,50 +906,83 @@ class VisionWorker:
 
     @staticmethod
     def _ask_local_vision_task(image: bytes, model: str, instruction: str, frame: dict[str, int]) -> dict[str, Any]:
+        action_requested = re.search(r"(?:нажми|клик|click|press|выбери|включи|запусти|поставь)", instruction, re.IGNORECASE) is not None
+        forbidden = re.search(r"(?:покуп|купи|удал|отправ|вход|логин|парол|плат[её]ж|оплат|установ|install|purchase|delete|send|password|payment)", instruction, re.IGNORECASE) is not None
+        allow_tool = action_requested and not forbidden
         prompt = (
             "Ты локальное зрение JARVIS. Выполни запрос пользователя по одному свежему кадру экрана: " + instruction + "\n"
-            "Ответь СТРОГО одним JSON без markdown: {\"answer\":\"краткий честный ответ по-русски\",\"action\":null}. "
-            "Если пользователь просит нажать ясно видимую безопасную кнопку, action может быть только "
-            "{\"type\":\"click\",\"x\":целое,\"y\":целое,\"confidence\":0.0}. "
-            f"Координаты x/y укажи в пикселях этого изображения {frame['imageWidth']}x{frame['imageHeight']}. "
-            "Предлагай click только при confidence >= 0.88. Никогда не предлагай нажатие покупки, удаления, отправки, входа, пароля, платежа, установки или неизвестной кнопки. "
-            "В answer только опиши увиденное и полезный контекст. Никогда не пиши, что действие уже выполнено, открыто, закрыто или нажато. "
-            "Не выдумывай невидимое и не раскрывай личные данные."
+            "Отвечай честно и кратко по-русски только по видимому. Никогда не утверждай, что уже нажал, открыл, закрыл или запустил. "
+            "Не выдумывай невидимое и не раскрывай личные данные. "
+            "Если пользователь явно просит безопасно нажать хорошо видимый элемент, вызови инструмент click по центру цели. "
+            "Координаты инструмента — целые числа на сетке 1000x1000: левый верх [0,0], правый низ [1000,1000]. "
+            "Не вызывай инструмент для покупки, удаления, отправки, входа, пароля, платежа или установки."
         )
-        response = post_json(
-            LOCAL_OLLAMA + "/api/chat",
-            {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt, "images": [base64.b64encode(image).decode("ascii")]}],
-                "stream": False,
-                "think": False,
-                "keep_alive": 0,
-                "format": "json",
-                "options": {"temperature": 0.15, "num_predict": 220},
-            },
-            timeout=120,
-        )
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt, "images": [base64.b64encode(image).decode("ascii")]}],
+            "stream": False,
+            "think": False,
+            "keep_alive": 0,
+            "options": {"temperature": 0.05, "num_predict": 220},
+        }
+        if allow_tool:
+            payload["tools"] = [{
+                "type": "function",
+                "function": {
+                    "name": "click",
+                    "description": "Предложить безопасный клик по центру явно видимого элемента. Координаты на сетке 1000x1000.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "coordinate": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        },
+                        "required": ["coordinate", "confidence"],
+                    },
+                },
+            }]
+        else:
+            payload["format"] = "json"
+            payload["messages"][0]["content"] += '\nОтветь строго JSON: {"answer":"краткий ответ","action":null}.'
+        response = post_json(LOCAL_OLLAMA + "/api/chat", payload, timeout=120)
         message = response.get("message")
-        content = clean_text(message.get("content"), 1800) if isinstance(message, dict) else ""
+        message = message if isinstance(message, dict) else {}
+        content = clean_text(message.get("content"), 1800)
+        safe_action = None
+        if allow_tool:
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for call in tool_calls[:1]:
+                    function = call.get("function") if isinstance(call, dict) else None
+                    if not isinstance(function, dict) or clean_text(function.get("name"), 20).lower() != "click":
+                        continue
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            arguments = None
+                    if not isinstance(arguments, dict):
+                        continue
+                    try:
+                        coordinate = arguments.get("coordinate")
+                        confidence = float(arguments.get("confidence", 0.0))
+                        if isinstance(coordinate, list) and len(coordinate) == 2:
+                            normalized_x, normalized_y = int(coordinate[0]), int(coordinate[1])
+                            if 0 <= normalized_x <= 1000 and 0 <= normalized_y <= 1000 and confidence >= 0.88:
+                                screen_x = frame["left"] + round(normalized_x * frame["width"] / 1000)
+                                screen_y = frame["top"] + round(normalized_y * frame["height"] / 1000)
+                                safe_action = {"type": "click", "x": screen_x, "y": screen_y, "confidence": round(confidence, 3)}
+                    except (TypeError, ValueError, OverflowError):
+                        safe_action = None
+            answer = content or ("Нашёл подходящий элемент. Нажму только после твоего подтверждения." if safe_action else "Вижу экран, но не смог уверенно выбрать безопасную цель.")
+            return {"answer": clean_text(answer, 320), "action": safe_action}
         try:
             parsed = json.loads(content)
         except (TypeError, ValueError, json.JSONDecodeError):
             return {"answer": content or "Не смог уверенно разобрать экран.", "action": None}
         answer = clean_text(parsed.get("answer"), 320) if isinstance(parsed, dict) else ""
-        action = parsed.get("action") if isinstance(parsed, dict) else None
-        safe_action = None
-        if isinstance(action, dict) and clean_text(action.get("type"), 20).lower() == "click":
-            try:
-                x = int(action.get("x"))
-                y = int(action.get("y"))
-                confidence = float(action.get("confidence", 0.0))
-                if 0 <= x < frame["imageWidth"] and 0 <= y < frame["imageHeight"] and confidence >= 0.88:
-                    screen_x = frame["left"] + round(x * frame["width"] / frame["imageWidth"])
-                    screen_y = frame["top"] + round(y * frame["height"] / frame["imageHeight"])
-                    safe_action = {"type": "click", "x": screen_x, "y": screen_y, "confidence": round(confidence, 3)}
-            except (TypeError, ValueError, OverflowError):
-                safe_action = None
-        return {"answer": answer or "Вижу экран, но не уверен в безопасном действии.", "action": safe_action}
+        return {"answer": answer or "Не смог уверенно понять происходящее на экране.", "action": None}
 
     @staticmethod
     def _ask_local_vision(image: bytes, model: str) -> str:

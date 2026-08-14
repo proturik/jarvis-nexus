@@ -428,6 +428,8 @@ function classify(message) {
   let match;
 
   if ((match = raw.match(/^(?:посмотри|глянь)(?:\s+(?:на|что происходит на))?\s*(?:мой\s+)?экран(?:\s+и\s+(.+))?$/iu))) return { kind: 'vision', prompt: raw, actionText: clean(match[1], 300) };
+  if (/^(?:включи|запусти|поставь)\s+(?:эту\s+)?(?:музыку|музон|трек|видео)(?=$|\s|[,.!?])/iu.test(input)) return { kind: 'vision', prompt: `${raw}. Найди на текущем экране наиболее подходящую ясно видимую безопасную видеокарточку или кнопку воспроизведения и предложи клик; не утверждай, что уже нажал.`, actionText: '' };
+  if (/^(?:посмотри|глянь)(?=$|\s|[,.!?])/iu.test(input)) return { kind: 'vision', prompt: raw, actionText: '' };
   if (/^(?:что (?:ты )?видишь|что происходит) на экране|^(?:опиши|проанализируй) экран|^помоги .{0,40}(?:на|с) экране/iu.test(input)) return { kind: 'vision', prompt: raw, actionText: '' };
   if ((match = raw.match(/^(?:запомни|помни)\s*[:,—-]?\s*(.+)$/iu))) return { kind: 'remember', text: clean(match[1], 600) };
   if ((match = raw.match(/^(?:добавь\s+)?(?:задачу|напоминание|напомни)\s*[:,—-]?\s*(.+)$/iu))) return { kind: 'task', text: clean(match[1], 600) };
@@ -741,14 +743,18 @@ async function chat(message) {
     const proposalReply = await friendlyProposalReply(message, operation);
     reply = [visionReply, proposalReply].filter(Boolean).join('\n\n');
   } else if (operation.kind === 'chat') {
-    reply = await askBrain(message);
-    if (reply && (isLegacyTemplateTurn({ role: 'assistant', text: reply }) || hasUnconfirmedActionClaim(reply))) {
-      const retryPrompt = [
-        'Последняя реплика пользователя: ' + clean(message, 400),
-        'Это обычный разговор, а не команда управления компьютером.',
-        'Ответь только на последнюю реплику живо, кратко и по-русски. Не продолжай старые поручения, не обещай и не заявляй никаких действий на ПК.',
-      ].join('\n');
-      reply = await askBrain(retryPrompt, 180, false);
+    if (/^(?:открой|закрой|запусти|включи|выключи|нажми|кликни|перемести|напиши|сделай|поставь)(?=$|\s|[,.!?])/iu.test(message)) {
+      reply = `${streetPrefix()} команду не разобрал и ничего не выполнял. Назови действие и цель чуть точнее — без вранья разберусь.`;
+    } else {
+      reply = await askBrain(message);
+      if (reply && (isLegacyTemplateTurn({ role: 'assistant', text: reply }) || hasUnconfirmedActionClaim(reply))) {
+        const retryPrompt = [
+          'Последняя реплика пользователя: ' + clean(message, 400),
+          'Это обычный разговор, а не команда управления компьютером.',
+          'Ответь только на последнюю реплику живо, кратко и по-русски. Не продолжай старые поручения, не обещай и не заявляй никаких действий на ПК.',
+        ].join('\n');
+        reply = await askBrain(retryPrompt, 180, false);
+      }
     }
   }
   reply ||= localReply(message, operation);
