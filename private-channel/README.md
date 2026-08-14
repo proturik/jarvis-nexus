@@ -1,55 +1,50 @@
 # JARVIS NEXUS private licence and update channel
 
-This is the verification-only first stage. It does not download, install,
-publish or activate anything.
+This stage provides owner-only signing and strict offline verification. It does not download, publish, install or activate updates.
 
 ## Trust model
 
-- One offline RSA-2048 or stronger private key signs licence and update payloads.
-- The private key stays only on the owner's signing machine. It is never stored
-  in Git, an installer, an update package or a friend's PC.
-- Distributed builds contain only the matching public key.
-- Every installation receives a random install ID. Do not derive it from MAC,
-  disk, CPU, Windows account or other hardware identifiers.
-- A licence payload authorises explicit install IDs and feature names.
-- An update payload pins the exact package filename, byte length and SHA-256.
-- Verification happens before any package is unpacked or process is stopped.
-- Failed verification is a hard stop. The current installation remains intact.
+- A production RSA-3072 private key is protected with Windows DPAPI (`CurrentUser`) under `%LOCALAPPDATA%\JARVIS NEXUS ULTRA\owner-secrets`.
+- The private key never enters Git, an installer, an update package or a friend's PC.
+- Distributed builds contain only `public-key.xml`. Its pinned SHA-256 fingerprint is `A935F9AC016C656C695A53A988C5EAD5CE30D42F6D57550A35311D7D8C0B455D`.
+- Every installation uses a random install ID, never a hardware identifier.
+- A licence authorises explicit install IDs and features. An update pins filename, byte length and SHA-256.
+- Verification is fail-closed: strict UTF-8, pinned issuer key, exact signature, validity window, safe filename, package size/hash and a strictly newer numeric semantic version.
 
-## Signed envelope
+## Owner commands
 
-The envelope is JSON with `schemaVersion`, `algorithm`, `payloadBase64` and
-`signatureBase64`. The signature covers the exact UTF-8 payload bytes, avoiding
-ambiguous JSON canonicalisation.
+Initialize or verify the production key (safe to repeat):
 
-Payload kind `license` contains:
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Initialize-JarvisSigningKey.ps1
+```
 
-- `issuer`, `licenseId`, `installIds`, `features`;
-- UTC `notBefore` and `expiresAt` timestamps.
+Issue a licence:
 
-Payload kind `update` contains:
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\New-JarvisSignedEnvelope.ps1 -Kind license -OutputPath .\license.json -InstallId install-PASTE_RANDOM_INSTALL_ID -Feature core,voice,vision -ValidDays 365
+```
 
-- `channel` (`private`), semantic `version`, `releaseId`;
-- UTC `issuedAt` and `expiresAt` timestamps;
-- `package.file`, `package.bytes` and `package.sha256`.
+Issue an update manifest:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\New-JarvisSignedEnvelope.ps1 -Kind update -OutputPath .\update.json -Version 1.1.0 -ReleaseId jarvis-1.1.0 -PackagePath C:\release\jarvis-1.1.0.zip -ValidDays 7
+```
+
+Issuer output files are never overwritten. Keep signed licences/manifests and release packages outside the source tree.
 
 ## Validation
 
-Run locally:
-
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-PrivateChannel.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-OwnerIssuer.ps1
 ```
 
-The tests generate an ephemeral key under the Windows temporary directory,
-verify valid licence/update envelopes, reject another install ID, reject a
-modified package and reject a modified signed payload. Test keys are deleted.
+Tests cover valid licence/update envelopes, pinned-key mismatch, wrong install ID, modified payload/package and replay/downgrade rejection.
 
-## Not implemented yet
+## Next private-channel stage
 
-1. Owner-only licence/update issuer UI.
-2. Protected storage for the production signing key.
-3. Private HTTPS transport and authentication.
-4. Staged updater, process hand-off, rollback and update UI.
-5. Installer integration; it remains intentionally paused.
-
+1. Private HTTPS transport and authenticated release index.
+2. Persistent highest accepted release ID/version and trusted-time state.
+3. Staged updater with a single verified file handle or equivalent anti-TOCTOU hand-off, rollback and UI.
+4. Installer integration only after the main application is finished.
