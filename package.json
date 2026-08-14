@@ -8,7 +8,8 @@
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
     "test": "node --test",
-    "test:brain": "node evals/jarvis-brain.live.mjs"
+    "test:brain": "node evals/jarvis-brain.live.mjs",
+    "test:poe2": "node --test evals/poe2-build-coach.test.mjs"
   },
   "engines": {
     "node": ">=20"
