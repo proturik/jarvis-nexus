@@ -1,0 +1,37 @@
+JARVIS NEXUS PERSONAL COLLABORATION LICENSE 1.0
+
+Copyright (c) 2026 JARVIS NEXUS contributors
+
+Permission is granted to the copyright holder and people explicitly authorised
+by the copyright holder ("Authorised Users") to use, copy, run and modify this
+software for personal, educational and other non-commercial purposes, subject
+to all of the following conditions:
+
+1. Use and collaboration must remain private between Authorised Users.
+2. Public redistribution, sublicensing, sale, rental, paid hosting and any use
+   connected to revenue generation are not permitted without separate written
+   permission from the copyright holder.
+3. This copyright notice, this licence and THIRD_PARTY_NOTICES.md must remain
+   with every complete copy shared with an Authorised User.
+4. Private access credentials, signing keys, personal data, conversation data,
+   screen captures and device-specific configuration must never be included in
+   a shared copy or update package.
+5. Access controls, signature checks and update-channel restrictions may not be
+   bypassed or removed from a distributed build.
+6. Modified private copies may be shared only with other Authorised Users and
+   must remain under these terms.
+
+Third-party software, models, media and any files derived from another project
+remain governed by their own licences. Nothing in this licence replaces,
+narrows or overrides those terms. If a file is copied or derived from the
+isair/jarvis project, the Jarvis AI Assistant License and its attribution apply
+to that file and any derivative as described in THIRD_PARTY_NOTICES.md.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
