@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { contextualUserMessage, passiveHotFollowup, redactSensitiveText, sanitizeAmbientContext } from './conversation-intelligence.mjs';
 import { Poe2BuildCoach, buildCoachContext, buildPoe2CoachVisionPrompt, fetchPoe2BuildSource, groundedPoe2Pointer, inferPoe2Patch, looksLikePoe2BuildUrl, poe2CoachIntent, sanitisePoe2Build } from './poe2-build-coach.mjs';
@@ -29,6 +30,27 @@ const THEME_SCRIPT = path.join(ROOT, 'windows-theme', 'Sync-Nexus-Theme.ps1');
 
 const ENV_FILE = process.env.JARVIS_ENV_FILE ? path.resolve(process.env.JARVIS_ENV_FILE) : path.join(ROOT, '.env');
 await loadDotEnv(ENV_FILE);
+
+// Program identity comes from files, not hard-coded strings, so an update can
+// carry its own version.txt and the installer/launcher can supply the release ID.
+function programIdentity() {
+  let version = '0.0.0';
+  try {
+    const raw = readFileSync(path.join(ROOT, 'version.txt'), 'utf8').trim();
+    if (/^\d+\.\d+\.\d+$/.test(raw)) version = raw;
+  } catch { /* version.txt is optional in source builds */ }
+  let releaseId = process.env.JARVIS_RELEASE_ID || '';
+  if (!releaseId) {
+    try {
+      const raw = readFileSync(path.join(ROOT, 'release.json'), 'utf8').replace(/^﻿/, '');
+      const releaseJson = JSON.parse(raw);
+      releaseId = String(releaseJson.releaseId || '');
+    } catch { /* release.json is optional */ }
+  }
+  if (!releaseId) releaseId = 'source';
+  return { version, releaseId };
+}
+const PROGRAM_IDENTITY = Object.freeze(programIdentity());
 
 const FILES = Object.freeze({
   conversations: path.join(DATA_DIR, 'conversations.json'),
@@ -292,6 +314,8 @@ function poe2LibrarySummary() {
 
 function publicState() {
   return {
+    version: PROGRAM_IDENTITY.version,
+    releaseId: PROGRAM_IDENTITY.releaseId,
     settings: { ...state.settings, cloudConnected: Boolean(process.env.OPENAI_API_KEY), themeBackupExists: false },
     profile: state.profile,
     memories: state.memories.slice(-18).reverse(),
