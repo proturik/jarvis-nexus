@@ -1,0 +1,8 @@
+data/
+.env
+release/
+sensors/models/
+*.exe
+*.onnx
+*.gguf
+*.pt
