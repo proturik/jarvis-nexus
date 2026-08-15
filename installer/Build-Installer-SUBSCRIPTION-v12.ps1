@@ -413,6 +413,14 @@ if (Test-Path -LiteralPath $UpdateWatcher -PathType Leaf) {
     }
     Start-Process -FilePath $watcherPowerShell -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"{0}"' -f $UpdateWatcher),'-ProgramRoot',('"{0}"' -f $AppRoot),'-IndexUrl',('"{0}"' -f $UpdateIndexUrl),'-DataRoot',('"{0}"' -f $DataRoot),'-StateRoot',('"{0}"' -f (Join-Path $InstallRoot 'update-state')),'-Port','3791') -WindowStyle Hidden | Out-Null
 }
+
+# --- Post-install / post-start health check ---
+# Verifies every component and library. Silent when all is green; opens a window
+# listing the problems when anything is missing or misconfigured.
+$HealthCheck = Join-Path $AppRoot 'private-channel\Test-JarvisHealth.ps1'
+if (Test-Path -LiteralPath $HealthCheck -PathType Leaf) {
+    & $HealthCheck -InstallRoot $AppRoot -DataRoot $DataRoot -Port '3791' -ShowIfFail | Out-Null
+}
 '@
 
 $purchaseUrlLiteral = "'" + $PurchaseUrl.Replace("'", "''") + "'"
@@ -502,7 +510,7 @@ function Copy-PayloadDirectory {
 }
 
 function New-DesktopShortcut {
-    param([string]$Path, [string]$Launcher, [string]$WorkingDirectory)
+    param([string]$Path, [string]$Launcher, [string]$WorkingDirectory, [string]$IconPath)
     if (Test-Path -LiteralPath $Path -PathType Leaf) { return $false }
     $quote = [char]34
     $shell = New-Object -ComObject WScript.Shell
@@ -510,8 +518,12 @@ function New-DesktopShortcut {
     $shortcut.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
     $shortcut.Arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ' + $quote + $Launcher + $quote
     $shortcut.WorkingDirectory = $WorkingDirectory
-    $shortcut.IconLocation = "$env:SystemRoot\System32\imageres.dll,102"
-    $shortcut.Description = 'Launch JARVIS NEXUS ULTRA'
+    if ([string]::IsNullOrWhiteSpace($IconPath) -or -not (Test-Path -LiteralPath $IconPath -PathType Leaf)) {
+        $shortcut.IconLocation = "$env:SystemRoot\System32\imageres.dll,102"
+    } else {
+        $shortcut.IconLocation = $IconPath + ',0'
+    }
+    $shortcut.Description = 'JARVIS NEXUS ULTRA — локальный голосовой ассистент'
     $shortcut.Save()
     return $true
 }
@@ -583,7 +595,9 @@ try {
     $launcher = Join-Path $launcherRoot 'Start-Jarvis-RELEASE.ps1'
     $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
     $desktopLink = Join-Path $desktop "$ProductName.lnk"
-    $desktopShortcutCreated = New-DesktopShortcut -Path $desktopLink -Launcher $launcher -WorkingDirectory $installRoot
+    $iconPath = Join-Path $installRoot 'desktop-shell\JarvisPet.exe'
+    if (-not (Test-Path -LiteralPath $iconPath -PathType Leaf)) { $iconPath = Join-Path $installRoot 'app\assets\jarvis-nexus.ico' }
+    $desktopShortcutCreated = New-DesktopShortcut -Path $desktopLink -Launcher $launcher -WorkingDirectory $installRoot -IconPath $iconPath
 
     $result = [pscustomobject]@{
         InstallRoot = $installRoot

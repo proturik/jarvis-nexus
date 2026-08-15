@@ -102,6 +102,7 @@ try {
         'Show-JarvisUpdateNotification.ps1',
         'Show-JarvisUpdateProgress.ps1',
         'Start-JarvisUpdateWatcher.ps1',
+        'Test-JarvisHealth.ps1',
         'public-key.xml'
     )
     foreach ($name in $clientFiles) {
