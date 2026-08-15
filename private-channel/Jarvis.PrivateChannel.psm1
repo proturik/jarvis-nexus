@@ -23,6 +23,24 @@ function ConvertFrom-JarvisJson {
     return $Json | ConvertFrom-Json
 }
 
+function Read-BoundedFile {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][int]$MaxBytes, [Parameter(Mandatory)][string]$Label)
+    $stream = New-Object IO.FileStream([IO.Path]::GetFullPath($Path), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $buffer = New-Object byte[] ($MaxBytes + 1)
+        $count = 0
+        while ($count -lt $buffer.Length) {
+            $read = $stream.Read($buffer, $count, $buffer.Length - $count)
+            if ($read -eq 0) { break }
+            $count += $read
+        }
+        if ($count -gt $MaxBytes) { throw "$Label is too large." }
+        $result = New-Object byte[] $count
+        if ($count -gt 0) { [Array]::Copy($buffer, $result, $count) }
+        return $result
+    } finally { $stream.Dispose() }
+}
+
 function ConvertTo-RequiredUtcTime {
     param([Parameter(Mandatory)]$Value, [Parameter(Mandatory)][string]$Name)
     $raw = [string]$Value
@@ -54,11 +72,9 @@ function Test-JarvisSignedEnvelopeCore {
     foreach ($path in @($EnvelopePath, $PublicKeyPath)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required verification file is missing: $path" }
     }
-    if ((Get-Item -LiteralPath $EnvelopePath).Length -gt 131072) { throw 'Signed envelope is too large.' }
-    if ((Get-Item -LiteralPath $PublicKeyPath).Length -gt 16384) { throw 'Public key file is too large.' }
-
     $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
-    try { $envelopeText = $strictUtf8.GetString([IO.File]::ReadAllBytes($EnvelopePath)) }
+    $envelopeBytes = Read-BoundedFile -Path $EnvelopePath -MaxBytes 131072 -Label 'Signed envelope'
+    try { $envelopeText = $strictUtf8.GetString($envelopeBytes) }
     catch { throw 'Signed envelope is not strict UTF-8.' }
     try { $envelope = ConvertFrom-JarvisJson $envelopeText }
     catch { throw 'Signed envelope is not valid JSON.' }
@@ -71,7 +87,7 @@ function Test-JarvisSignedEnvelopeCore {
     if ($payloadBytes.Length -eq 0 -or $payloadBytes.Length -gt 65536) { throw 'Signed payload size is invalid.' }
     if ($signatureBytes.Length -lt 256 -or $signatureBytes.Length -gt 1024) { throw 'Signature size is invalid.' }
 
-    $publicBytes = [IO.File]::ReadAllBytes($PublicKeyPath)
+    $publicBytes = Read-BoundedFile -Path $PublicKeyPath -MaxBytes 16384 -Label 'Public key'
     $actualFingerprint = Get-Sha256Hex $publicBytes
     if ($actualFingerprint -ne $PinnedPublicKeyFingerprint.ToUpperInvariant()) { throw 'Public signing key fingerprint is not trusted.' }
     try { $publicXml = $strictUtf8.GetString($publicBytes) }

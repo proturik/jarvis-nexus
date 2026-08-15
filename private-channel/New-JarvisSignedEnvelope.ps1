@@ -16,6 +16,29 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security -ErrorAction Stop
 
+function Assert-NoExistingReparsePoint {
+    param([Parameter(Mandatory)][string]$Path)
+    $current = [IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Reparse points are forbidden in release-package paths: $current" }
+        }
+        $parent = Split-Path -Parent $current
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $current) { break }
+        $current = $parent
+    }
+}
+
+function Get-StreamSha256Hex {
+    param([Parameter(Mandatory)][IO.Stream]$Stream)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $Stream.Position = 0
+        return ([BitConverter]::ToString($sha.ComputeHash($Stream))).Replace('-', '')
+    } finally { $sha.Dispose(); $Stream.Position = 0 }
+}
+
 function Get-Sha256Hex {
     param([byte[]]$Bytes)
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -35,6 +58,7 @@ $protectedBytes = $null
 $privateBytes = $null
 $payloadBytes = $null
 $rsa = $null
+$packageStream = $null
 try {
     $metadata = Get-Content -LiteralPath $metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $protectedBytes = [IO.File]::ReadAllBytes($privatePath)
@@ -70,12 +94,17 @@ try {
         if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Version must be numeric semantic versioning, for example 1.2.3.' }
         if ($ReleaseId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$') { throw 'ReleaseId format is invalid.' }
         if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) { throw 'Update package does not exist.' }
-        $packageItem = Get-Item -LiteralPath $PackagePath
-        if ($packageItem.Length -le 0) { throw 'Update package is empty.' }
+        $packageFull = [IO.Path]::GetFullPath($PackagePath)
+        Assert-NoExistingReparsePoint -Path $packageFull
+        $packageName = [IO.Path]::GetFileName($packageFull)
+        if ($packageName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,126}\.zip$' -or
+            $packageName -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)') { throw 'Update package filename is unsafe.' }
+        $packageStream = New-Object IO.FileStream($packageFull, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($packageStream.Length -le 0) { throw 'Update package is empty.' }
+        $packageHash = Get-StreamSha256Hex -Stream $packageStream
         $common.channel = 'private'; $common.version = $Version; $common.releaseId = $ReleaseId
         $common.package = [ordered]@{
-            file = $packageItem.Name; bytes = $packageItem.Length
-            sha256 = (Get-FileHash -LiteralPath $packageItem.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+            file = $packageName; bytes = $packageStream.Length; sha256 = $packageHash
         }
     }
 
@@ -101,6 +130,7 @@ try {
     foreach ($bytes in @($privateBytes, $protectedBytes, $payloadBytes)) {
         if ($null -ne $bytes) { [Array]::Clear($bytes, 0, $bytes.Length) }
     }
+    if ($null -ne $packageStream) { $packageStream.Dispose() }
     if ($null -ne $rsa) { $rsa.Dispose() }
     [Array]::Clear($entropy, 0, $entropy.Length)
 }

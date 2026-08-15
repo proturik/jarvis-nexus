@@ -1,6 +1,6 @@
 # JARVIS NEXUS private licence and update channel
 
-This stage provides owner-only signing and strict offline verification. It does not download, publish, install or activate updates.
+This stage provides owner-only signing, strict offline verification, protected anti-replay state, safe ZIP staging, explicit activation and rollback. It does not yet download or publish updates.
 
 ## Trust model
 
@@ -13,7 +13,7 @@ This stage provides owner-only signing and strict offline verification. It does 
 
 ## Owner commands
 
-Initialize or verify the production key (safe to repeat):
+Initialize or verify the production key:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Initialize-JarvisSigningKey.ps1
@@ -31,20 +31,43 @@ Issue an update manifest:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\New-JarvisSignedEnvelope.ps1 -Kind update -OutputPath .\update.json -Version 1.1.0 -ReleaseId jarvis-1.1.0 -PackagePath C:\release\jarvis-1.1.0.zip -ValidDays 7
 ```
 
-Issuer output files are never overwritten. Keep signed licences/manifests and release packages outside the source tree.
+Issuer output files are never overwritten. Keep signed licences, manifests and release packages outside the source tree.
+
+## Staged updater
+
+Update ZIP files must contain only a `payload/` tree. The updater rejects path traversal, unsafe Windows names, duplicate paths, reparse-point roots, excessive file counts, expanded-size limits and suspicious compression ratios.
+
+Verify and stage without changing the current program:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Invoke-JarvisStagedUpdate.ps1 -EnvelopePath C:\release\update.json -PackagePath C:\release\jarvis-1.1.0.zip -InstallRoot C:\JARVIS\app-current -CurrentVersion 1.0.0
+```
+
+Add `-Activate` only after JARVIS processes have exited. The updater never stops processes itself. Activation moves the old program directory to a sibling `.jarvis-backup-*` directory, moves the verified payload into place, and only then commits the DPAPI-protected version/release/time high-water mark.
+
+Rollback keeps the anti-replay floor at the newest accepted version:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Restore-JarvisUpdateBackup.ps1 -InstallRoot C:\JARVIS\app-current -BackupPath C:\JARVIS\.jarvis-backup-1.1.0-PASTE_ID
+```
+
+The activation target must be a program-only/versioned directory. Do not point it at a root containing profile, memory, history or other user data. Installer and live-launcher integration remain paused.
+
+The protected state defends against other local accounts, accidental rollback and ordinary writable-config tampering. A malicious process already running as the same Windows owner could replay a previously copied DPAPI blob; resisting that stronger attacker requires a remote monotonic release service or hardware-backed counter.
 
 ## Validation
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-PrivateChannel.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-OwnerIssuer.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-StagedUpdater.ps1
 ```
 
-Tests cover valid licence/update envelopes, pinned-key mismatch, wrong install ID, modified payload/package and replay/downgrade rejection.
+Tests cover signature/key pinning, wrong install IDs, payload/package tampering, replay/downgrade rejection, DPAPI state tampering, stage-only behavior, activation, rollback and ZIP-slip rejection.
 
 ## Next private-channel stage
 
-1. Private HTTPS transport and authenticated release index.
-2. Persistent highest accepted release ID/version and trusted-time state.
-3. Staged updater with a single verified file handle or equivalent anti-TOCTOU hand-off, rollback and UI.
+1. Choose the private HTTPS host/domain and authentication method, then add the signed release index and downloader.
+2. Integrate process hand-off with a versioned program-only directory and updater UI.
+3. Add remote monotonic release state if same-user malware rollback is in scope.
 4. Installer integration only after the main application is finished.
