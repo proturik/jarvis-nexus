@@ -126,7 +126,19 @@ Hand-off stops the running JARVIS program, activates a verified update and resta
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Invoke-JarvisHandoff.ps1 -ProgramRoot C:\JARVIS\app-current -EnvelopePath C:\release\update.json -PackagePath C:\release\jarvis-1.1.0.zip -CurrentVersion 1.0.0
 ```
 
-Standalone helpers: `Stop-JarvisProgram.ps1` and `Start-JarvisProgram.ps1`. The optional `Show-JarvisUpdatePrompt.ps1 -CurrentVersion 1.0.0 -NewVersion 1.1.0 -ReleaseNotes "..."` shows a «Обновить / Отмена» dialog and only decides; it never installs anything by itself.
+Standalone helpers: `Stop-JarvisProgram.ps1` and `Start-JarvisProgram.ps1`. The optional `Show-JarvisUpdatePrompt.ps1 -CurrentVersion 1.0.0 -NewVersion 1.1.0 -ReleaseNotes "..."` shows a «Обновить / Отмена» dialog and only decides; it never installs anything by itself. `Show-JarvisUpdateNotification.ps1` shows a non-blocking tray balloon («Доступно обновление JARVIS») for background checks while JARVIS is already running.
+
+## Subscription licensing
+
+Licences carry a billing tier: `monthly` (≤31 days), `yearly` (≤366 days) or `lifetime` (≤3651 days). Licences issued without a tier verify as `lifetime`, so older licences stay valid. The owner issues a licence with `New-JarvisSubscriptionLicense.ps1 -InstallId install-… -Tier yearly -OutputPath .\license.json`.
+
+The client gate `Invoke-JarvisSubscriptionCheck.ps1` runs before the core starts: it resolves (or creates) the per-install ID in `<DataRoot>\install-id.txt`, verifies `<DataRoot>\license\license.json` against the pinned key, and on any failure shows a topmost «Требуется подписка JARVIS» dialog and exits non-zero — the core is never started. Payments are handled outside this code (Stripe for EU/US in the future); for now the owner issues the signed licence file after payment.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Invoke-JarvisSubscriptionCheck.ps1 -InstallRoot C:\JARVIS\app-current -DataRoot C:\JARVIS\data
+```
+
+The subscription installer (`installer\Build-Installer-SUBSCRIPTION-v12.ps1`) installs the versioned program-only layout with the bundled updater, the subscription gate and the startup update check; the purchase page is `purchase.html` served from GitHub Pages.
 
 ## Program/data split and startup update check
 
@@ -149,13 +161,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-S
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-ReleaseIndex.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-Handoff.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-UpdateFlow.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-Subscription.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\installer\Test-Installer-SUBSCRIPTION.ps1
 ```
 
-Tests cover signature/key pinning, wrong install IDs, payload/package tampering, replay/downgrade rejection, DPAPI state tampering, stage-only behavior, activation, rollback, ZIP-slip rejection, release-index tampering/expiry/wrong-key, HTTPS/redirect/DNS transport rejection, download size/hash mismatch, precise process hand-off including safety against stopping unrelated processes, and the end-to-end update flow including data survival across an update.
+Tests cover signature/key pinning, wrong install IDs, payload/package tampering, replay/downgrade rejection, DPAPI state tampering, stage-only behavior, activation, rollback, ZIP-slip rejection, release-index tampering/expiry/wrong-key, HTTPS/redirect/DNS transport rejection, download size/hash mismatch, precise process hand-off including safety against stopping unrelated processes, the end-to-end update flow including data survival across an update, tier-aware subscription licences (monthly/yearly/lifetime, tampering, expiry, wrong install ID, backward compatibility), and the subscription installer staging/layout.
 
 ## Next private-channel stage
 
-1. Create the GitHub repository, push `master`, enable GitHub Pages for the chosen folder/branch, publish the first signed release index and point the downloader at `https://<user>.github.io/<repo>/release-index.json`.
-2. Migrate the live install to a versioned program-only directory (marker + `version.txt`) with data in `%LOCALAPPDATA%\JARVIS NEXUS ULTRA\data`, then set `JARVIS_INDEX_URL` / `-UpdateIndexUrl` to enable automatic updates.
+1. Publish `purchase.html` and the signed release index on GitHub Pages (`https://proturik.github.io/jarvis-nexus/`); the channel and installer are already wired to that URL.
+2. Connect Stripe (EU/US cards) so purchases issue licences automatically via webhook; until then the owner issues the signed licence file after manual payment.
+3. Add remote monotonic release state if same-user malware rollback is in scope.
 3. Add remote monotonic release state if same-user malware rollback is in scope.
 4. Installer integration only after the main application is finished.
