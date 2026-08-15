@@ -1,0 +1,13 @@
+[
+  {
+    "_comment": "Stdio MCP server. command is resolved on PATH (use npx.cmd on Windows if bare npx is not found). enabled defaults to true.",
+    "name": "filesystem",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-filesystem",
+      "C:\\Users\\example"
+    ],
+    "enabled": true
+  }
+]

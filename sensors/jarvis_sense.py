@@ -58,6 +58,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "visionModel": DEFAULT_VISION_MODEL,
 }
 
+DICTATION_HOTKEY_DEFAULT = "<ctrl>+<shift>+d"
+DICTATION_MAX_CHARS = 2000
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -1188,6 +1191,212 @@ def resolve_tts_model_path(argument: str | None) -> Path:
     return Path(__file__).resolve().parent / "models" / "tts" / "v5_5_ru.pt"
 
 
+def _prepare_dictation_text(text: Any) -> str:
+    """Trim and cap recognised dictation text for pasting."""
+    return str(text or "").replace("\x00", " ").strip()[:DICTATION_MAX_CHARS]
+
+
+def paste_text(text: str) -> bool:
+    """Paste text into the currently focused application.
+
+    Preferred path: copy the text into the system clipboard with pyperclip and
+    send Ctrl+V through pynput. When pyperclip is unavailable the text is typed
+    out character by character instead. Returns True when the text was
+    delivered.
+    """
+    prepared = _prepare_dictation_text(text)
+    if not prepared:
+        return False
+    try:
+        from pynput.keyboard import Controller, Key, KeyCode
+    except Exception as error:
+        print(f"Ошибка: pynput недоступен для вставки текста: {clean_text(error, 120)}", file=sys.stderr)
+        return False
+
+    clipboard_available = False
+    try:
+        import pyperclip
+        pyperclip.copy(prepared)
+        clipboard_available = True
+    except Exception:
+        clipboard_available = False
+
+    controller = Controller()
+    if clipboard_available:
+        try:
+            controller.press(Key.ctrl)
+            try:
+                controller.press(KeyCode.from_char("v"))
+                controller.release(KeyCode.from_char("v"))
+            finally:
+                controller.release(Key.ctrl)
+            return True
+        except Exception as error:
+            print(f"Ошибка вставки через буфер обмена: {clean_text(error, 120)}", file=sys.stderr)
+
+    try:
+        controller.type(prepared)
+        return True
+    except Exception as error:
+        print(f"Ошибка набора текста: {clean_text(error, 120)}", file=sys.stderr)
+        return False
+
+
+def _dictation_start_recording(recognizer: Any) -> dict[str, Any]:
+    """Start capturing the default microphone into the given Vosk recognizer."""
+    selection = resolve_microphone(None)
+    validate_microphone_capture(selection)
+    sample_rate = int(selection["defaultSampleRate"])
+    stream = sd.RawInputStream(
+        device=int(selection["id"]),
+        samplerate=sample_rate,
+        blocksize=8000,
+        dtype="int16",
+        channels=1,
+        callback=lambda indata, _frames, _time_info, _status: recognizer.AcceptWaveform(bytes(indata)),
+    )
+    stream.start()
+    return {"selection": selection, "stream": stream}
+
+
+def _dictation_stop_recording(capture: dict[str, Any], recognizer: Any) -> str:
+    """Stop capture and return the final recognised text, trimmed and capped."""
+    stream = capture.get("stream") if isinstance(capture, dict) else None
+    if stream is not None:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
+    try:
+        raw = recognizer.FinalResult()
+    except Exception as error:
+        print(f"Ошибка финализации распознавания: {clean_text(error, 120)}", file=sys.stderr)
+        return ""
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return _prepare_dictation_text(payload.get("text"))
+
+
+def _dictation_finalize_and_paste(recognizer: Any, capture: dict[str, Any]) -> bool:
+    """Finalize one recorded utterance and paste it. Returns True if pasted."""
+    text = _dictation_stop_recording(capture, recognizer)
+    if not text:
+        return False
+    paste_text(text)
+    return True
+
+
+def run_dictation_mode(args: argparse.Namespace, recognizer_factory: Any) -> int:
+    """Run the hold-to-record dictation loop until interrupted.
+
+    The caller supplies ``recognizer_factory``, a zero-argument callable that
+    returns a configured Vosk recognizer; tests inject a fake here. Requires
+    pynput: when it is missing a clear message is printed to stderr and exit
+    code 2 is returned. Each record cycle is isolated so one failure does not
+    stop the loop.
+    """
+    try:
+        from pynput import keyboard
+    except Exception:
+        print(
+            "Ошибка: режим диктовки требует пакет pynput. "
+            "Установите его командой: python -m pip install pynput",
+            file=sys.stderr,
+        )
+        return 2
+
+    hotkey_combo = (
+        str(getattr(args, "dictation_hotkey", None) or DICTATION_HOTKEY_DEFAULT).strip()
+        or DICTATION_HOTKEY_DEFAULT
+    )
+    try:
+        hotkey_keys = set(keyboard.HotKey.parse(hotkey_combo))
+    except Exception as error:
+        print(
+            f"Ошибка: не удалось разобрать горячую клавишу «{hotkey_combo}»: {clean_text(error, 120)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Hold-to-record needs press AND release events, so we use the same
+    # Listener + HotKey.parse + Listener.canonical primitives that
+    # GlobalHotKeys builds on internally (GlobalHotKeys itself only exposes an
+    # on-activate callback, which is not enough for a hold gesture).
+    pressed: set[Any] = set()
+    active: dict[str, Any] | None = None
+    listener_box: dict[str, Any] = {}
+
+    def _start() -> None:
+        nonlocal active
+        if active is not None:
+            return
+        try:
+            recognizer = recognizer_factory()
+            active = {
+                "recognizer": recognizer,
+                "capture": _dictation_start_recording(recognizer),
+            }
+            print("[диктовка] слушаю…", file=sys.stderr)
+        except Exception as error:
+            active = None
+            print(f"Ошибка запуска записи: {clean_text(error, 120)}", file=sys.stderr)
+
+    def _stop() -> None:
+        nonlocal active
+        if active is None:
+            return
+        cycle = active
+        active = None
+        try:
+            if _dictation_finalize_and_paste(cycle["recognizer"], cycle["capture"]):
+                print("[диктовка] текст вставлен.", file=sys.stderr)
+            else:
+                print("[диктовка] пусто — пропускаю вставку.", file=sys.stderr)
+        except Exception as error:
+            print(f"Ошибка цикла диктовки: {clean_text(error, 120)}", file=sys.stderr)
+
+    def _on_press(key: Any, injected: bool = False) -> None:
+        if injected:
+            return
+        canonical = listener_box["listener"].canonical(key)
+        pressed.add(canonical)
+        if hotkey_keys.issubset(pressed):
+            _start()
+
+    def _on_release(key: Any, injected: bool = False) -> None:
+        if injected:
+            return
+        canonical = listener_box["listener"].canonical(key)
+        was_active = hotkey_keys.issubset(pressed)
+        pressed.discard(canonical)
+        if was_active and not hotkey_keys.issubset(pressed):
+            _stop()
+
+    listener = keyboard.Listener(on_press=_on_press, on_release=_on_release)
+    listener_box["listener"] = listener
+    print(
+        f"[диктовка] готово. Удерживайте {hotkey_combo}, говорите и отпускайте — "
+        "текст вставится в активное окно.",
+        file=sys.stderr,
+    )
+    listener.start()
+    try:
+        listener.join()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            listener.stop()
+        except Exception:
+            pass
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Private local JARVIS Sense companion")
     parser.add_argument("--install-root", help="JARVIS installation root")
@@ -1197,6 +1406,16 @@ def main() -> int:
     mode.add_argument("--diagnose", action="store_true", help="validate model and selected microphone, then exit")
     mode.add_argument("--list-microphones", action="store_true", help="print available input devices as JSON, then exit")
     mode.add_argument("--test-tts", metavar="TEXT", help="speak one phrase with local neural TTS, then exit")
+    mode.add_argument(
+        "--dictation",
+        action="store_true",
+        help="hold-to-record offline dictation that pastes into the focused app, then exit",
+    )
+    parser.add_argument(
+        "--dictation-hotkey",
+        default=DICTATION_HOTKEY_DEFAULT,
+        help="hotkey combo for --dictation (default: %(default)s)",
+    )
     args = parser.parse_args()
 
     store = SettingsStore(resolve_install_root(args.install_root))
@@ -1275,6 +1494,31 @@ def main() -> int:
             )
             emit_json(diagnostic)
             return 1
+
+    if args.dictation:
+        if not model_path.is_dir():
+            print("Ошибка: русская модель голоса не установлена. Укажите путь через --model-path.", file=sys.stderr)
+            return 1
+        try:
+            dictation_selection = resolve_microphone(None)
+            validate_microphone_capture(dictation_selection)
+            dictation_sample_rate = int(dictation_selection["defaultSampleRate"])
+        except Exception as error:
+            print(f"Ошибка микрофона для диктовки: {clean_text(error, 180)}", file=sys.stderr)
+            return 1
+
+        # Load the Vosk model exactly once; each hold-to-record cycle reuses it
+        # and only creates a cheap KaldiRecognizer wrapper around it.
+        dictation_model: dict[str, Any] = {"model": None}
+
+        def recognizer_factory() -> Any:
+            if dictation_model["model"] is None:
+                dictation_model["model"] = Model(str(model_path))
+            recognizer = KaldiRecognizer(dictation_model["model"], dictation_sample_rate)
+            recognizer.SetWords(False)
+            return recognizer
+
+        return run_dictation_mode(args, recognizer_factory)
 
     stop_event = threading.Event()
     speaker = Speaker(tts_model_path)

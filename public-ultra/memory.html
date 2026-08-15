@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Память JARVIS</title>
+<style>
+  :root {
+    --void: #050d18; --deep: #071622; --panel: #0b2030; --line: rgba(117,219,232,.17);
+    --text: #eaf7f8; --mist: #91afba; --cyan: #00ffff; --violet: #ad00ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: radial-gradient(1200px 700px at 70% -10%, #0b2030 0%, var(--void) 55%) fixed;
+    color: var(--text); font-family: "Bahnschrift", "Aptos", "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(9,29,43,.9), rgba(9,29,43,.4));
+    backdrop-filter: blur(6px);
+  }
+  h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: .5px; }
+  h1 .accent { color: var(--cyan); }
+  #stats { color: var(--mist); font-size: 13px; }
+  #status {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    padding: 14px 22px; border: 1px solid var(--line); border-radius: 10px;
+    background: rgba(9,29,43,.92); color: var(--cyan-soft, #72e9ee); font-size: 15px; z-index: 5;
+  }
+  canvas { display: block; flex: 1; width: 100%; cursor: grab; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="accent">Память</span> JARVIS</h1>
+  <div id="stats">—</div>
+</header>
+<canvas id="graph"></canvas>
+<div id="status">Загрузка графа памяти…</div>
+<script>
+(() => {
+  'use strict';
+  const canvas = document.getElementById('graph');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const statsEl = document.getElementById('stats');
+  const PALETTE = ['#00ffff', '#ad00ff', '#72e9ee', '#ff6e00', '#39ff14', '#ff00ff'];
+
+  let nodes = [];
+  let links = [];
+  let nodeById = new Map();
+  let frameCount = 0;
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(canvas.clientWidth * dpr);
+    canvas.height = Math.round(canvas.clientHeight * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function colorFor(type) {
+    let hash = 0;
+    for (const ch of String(type || 'topic')) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+    return PALETTE[hash % PALETTE.length];
+  }
+
+  function init() {
+    const w = canvas.clientWidth || 800;
+    const h = canvas.clientHeight || 600;
+    for (const node of nodes) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = Math.min(w, h) * 0.28 * Math.sqrt(Math.random());
+      node.x = w / 2 + Math.cos(angle) * radius;
+      node.y = h / 2 + Math.sin(angle) * radius;
+      node.vx = 0; node.vy = 0;
+    }
+    frameCount = 0;
+  }
+
+  function step() {
+    const w = canvas.clientWidth || 800;
+    const h = canvas.clientHeight || 600;
+    // pairwise repulsion
+    for (let i = 0; i < nodes.length; i += 1) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const b = nodes[j];
+        let dx = a.x - b.x; let dy = a.y - b.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
+        const force = 2200 / d2;
+        const d = Math.sqrt(d2);
+        a.vx += (dx / d) * force; a.vy += (dy / d) * force;
+        b.vx -= (dx / d) * force; b.vy -= (dy / d) * force;
+      }
+    }
+    // spring attraction along links
+    for (const link of links) {
+      const s = nodeById.get(link.source);
+      const t = nodeById.get(link.target);
+      if (!s || !t) continue;
+      const dx = t.x - s.x; const dy = t.y - s.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const force = (d - 110) * 0.045;
+      s.vx += (dx / d) * force; s.vy += (dy / d) * force;
+      t.vx -= (dx / d) * force; t.vy -= (dy / d) * force;
+    }
+    // centering + damping + integration
+    for (const node of nodes) {
+      node.vx += (w / 2 - node.x) * 0.003;
+      node.vy += (h / 2 - node.y) * 0.003;
+      node.vx *= 0.82; node.vy *= 0.82;
+      node.x += node.vx; node.y += node.vy;
+    }
+  }
+
+  function draw() {
+    const w = canvas.clientWidth || 800;
+    const h = canvas.clientHeight || 600;
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(117,219,232,.22)';
+    ctx.lineWidth = 1;
+    for (const link of links) {
+      const s = nodeById.get(link.source);
+      const t = nodeById.get(link.target);
+      if (!s || !t) continue;
+      ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
+    }
+    ctx.font = '11px Bahnschrift, Segoe UI, sans-serif';
+    for (const node of nodes) {
+      const radius = 3.5 + Math.min(7, node.observationCount * 1.2);
+      ctx.fillStyle = colorFor(node.type);
+      ctx.beginPath(); ctx.arc(node.x, node.y, radius, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#eaf7f8';
+      ctx.fillText(node.name, node.x + radius + 3, node.y + 3);
+    }
+  }
+
+  function frame() {
+    step(); step(); draw();
+    frameCount += 1;
+    if (frameCount < 500) requestAnimationFrame(frame);
+  }
+
+  async function load() {
+    try {
+      const response = await fetch('/api/memory-graph');
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const data = await response.json();
+      nodes = Array.isArray(data.nodes) ? data.nodes : [];
+      links = Array.isArray(data.links) ? data.links : [];
+      nodeById = new Map(nodes.map((node) => [node.id, node]));
+      links = links.filter((link) => nodeById.has(link.source) && nodeById.has(link.target));
+      statsEl.textContent = nodes.length + ' сущностей · ' + links.length + ' связей';
+      statusEl.style.display = 'none';
+      init();
+      requestAnimationFrame(frame);
+    } catch {
+      statusEl.textContent = 'memory endpoint unavailable';
+      statsEl.textContent = '—';
+    }
+  }
+  load();
+})();
+</script>
+</body>
+</html>
