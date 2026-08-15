@@ -11,13 +11,15 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$InstallRoot,
-    [string]$DataRoot = (Join-Path $InstallRoot '..\data'),
-    [string]$PublicKeyPath = (Join-Path $PSScriptRoot 'public-key.xml'),
+    [string]$DataRoot = '',
+    [string]$PublicKeyPath = '',
     [string]$PurchaseUrl = 'https://proturik.github.io/jarvis-nexus/purchase.html'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($DataRoot)) { $DataRoot = Join-Path $InstallRoot '..\data' }
+if ([string]::IsNullOrWhiteSpace($PublicKeyPath)) { $PublicKeyPath = Join-Path $PSScriptRoot 'public-key.xml' }
 Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
 Add-Type -AssemblyName System.Drawing -ErrorAction Stop
 Import-Module (Join-Path $PSScriptRoot 'Jarvis.Subscription.psm1') -Force -ErrorAction Stop
