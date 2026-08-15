@@ -94,15 +94,19 @@ if ($CheckOnly) {
 }
 
 if (-not $AutoConfirm) {
-    $confirmed = & (Join-Path $PSScriptRoot 'Show-JarvisUpdatePrompt.ps1') -CurrentVersion $CurrentVersion -NewVersion ([string]$release.Version)
+    $confirmed = & (Join-Path $PSScriptRoot 'Show-JarvisUpdatePrompt.ps1') -CurrentVersion $CurrentVersion -NewVersion ([string]$release.Version) -PackageBytes ([long]$release.PackageBytes)
     if (-not $confirmed) {
         return [pscustomobject]@{ Ok = $true; UpdateAvailable = $true; Declined = $true; Version = $release.Version }
     }
 }
 
+# After the user pressed the «Обновить сейчас» button, always show the progress
+# HUD so the download and install are visible with remaining-time estimate.
+$useHud = [bool]$Progress -or (-not $AutoConfirm)
+
 $statusFile = Join-Path $StateRoot 'update-progress.json'
 $progressProcess = $null
-if ($Progress) {
+if ($useHud) {
     New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
     $progressScript = Join-Path $PSScriptRoot 'Show-JarvisUpdateProgress.ps1'
     if (Test-Path -LiteralPath $progressScript -PathType Leaf) {
@@ -117,7 +121,7 @@ if ($Progress) {
 }
 
 $progressCallback = $null
-if ($Progress) {
+if ($useHud) {
     $progressCallback = {
         param($info)
         $state = [ordered]@{
@@ -139,7 +143,7 @@ try {
     $downloaded = Get-JarvisReleasePackage -Release $release -OutputDirectory $downloadDirectory `
         -AllowLoopbackHttp:$AllowLoopbackHttp -ProgressCallback $progressCallback
 
-    if ($Progress) {
+    if ($useHud) {
         $state = [ordered]@{ State = 'installing'; Version = [string]$release.Version; Percent = 100; RemainingSeconds = 0; Message = '' }
         try { $state | ConvertTo-Json -Compress | Set-Content -LiteralPath $statusFile -Encoding UTF8 } catch { }
     }
@@ -159,7 +163,7 @@ try {
     }
     $handoff = & (Join-Path $PSScriptRoot 'Invoke-JarvisHandoff.ps1') @handoffArgs
 
-    if ($Progress) {
+    if ($useHud) {
         $state = [ordered]@{ State = 'done'; Version = [string]$release.Version; Percent = 100; RemainingSeconds = 0; Message = '' }
         try { $state | ConvertTo-Json -Compress | Set-Content -LiteralPath $statusFile -Encoding UTF8 } catch { }
     }
@@ -177,13 +181,13 @@ try {
         Uri = $handoff.Uri
     }
 } catch {
-    if ($Progress) {
+    if ($useHud) {
         $state = [ordered]@{ State = 'error'; Version = [string]$release.Version; Percent = 0; RemainingSeconds = 0; Message = clean($_.Exception.Message, 240) }
         try { $state | ConvertTo-Json -Compress | Set-Content -LiteralPath $statusFile -Encoding UTF8 } catch { }
     }
     throw
 } finally {
-    if ($Progress -and $null -ne $progressProcess) {
+    if ($useHud -and $null -ne $progressProcess) {
         try { $null = $progressProcess.WaitForExit(3000) } catch { }
     }
 }

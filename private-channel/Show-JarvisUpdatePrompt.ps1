@@ -1,17 +1,19 @@
 ﻿<#
 .SYNOPSIS
-  Minimal opt-in updater UI: a small topmost WinForms dialog that shows the
-  current version, the new version and optional release notes, with
-  «Обновить» / «Отмена» buttons. UI-only; it never calls the updater.
+  Neat update prompt for JARVIS NEXUS ULTRA: shows the current version, the new
+  version, the download size and optional release notes, with an accent
+  «Обновить сейчас» button and a «Позже» button.
 
-.EXAMPLE
-  $go = & .\Show-JarvisUpdatePrompt.ps1 -CurrentVersion 1.0.0 -NewVersion 9.9.9 -ReleaseNotes "Исправления и улучшения"
+.DESCRIPTION
+  UI-only: it returns $true (update) or $false (later) and never calls the
+  updater. The caller runs the actual download + install with the progress HUD.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$CurrentVersion,
     [Parameter(Mandatory)][string]$NewVersion,
-    [string]$ReleaseNotes = ''
+    [string]$ReleaseNotes = '',
+    [long]$PackageBytes = 0
 )
 
 Set-StrictMode -Version Latest
@@ -19,54 +21,92 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
 Add-Type -AssemblyName System.Drawing -ErrorAction Stop
 
+$accent = [System.Drawing.Color]::FromArgb(0, 142, 204)
+$darkText = [System.Drawing.Color]::FromArgb(32, 32, 32)
+$mutedText = [System.Drawing.Color]::FromArgb(110, 110, 110)
+
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'JARVIS NEXUS ULTRA — обновление'
-$form.Size = New-Object System.Drawing.Size(460, 320)
+$form.Text = 'JARVIS NEXUS ULTRA'
+$form.Size = New-Object System.Drawing.Size(480, 360)
 $form.StartPosition = 'CenterScreen'
 $form.TopMost = $true
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.MinimizeBox = $false
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$form.BackColor = [System.Drawing.Color]::White
 
-$header = New-Object System.Windows.Forms.Label
-$header.Text = "Доступно обновление: $CurrentVersion → $NewVersion"
-$header.Location = New-Object System.Drawing.Point(16, 16)
-$header.AutoSize = $true
-$header.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+$title = New-Object System.Windows.Forms.Label
+$title.Text = 'Доступно обновление JARVIS'
+$title.Location = New-Object System.Drawing.Point(18, 16)
+$title.AutoSize = $true
+$title.Font = New-Object System.Drawing.Font('Segoe UI', 13, [System.Drawing.FontStyle]::Bold)
+$title.ForeColor = $darkText
 
-$notesLabel = New-Object System.Windows.Forms.Label
-$notesLabel.Text = 'Что нового:'
-$notesLabel.Location = New-Object System.Drawing.Point(16, 52)
-$notesLabel.AutoSize = $true
+$versions = New-Object System.Windows.Forms.Label
+$versions.Text = "Текущая версия: $CurrentVersion"
+$versions.Location = New-Object System.Drawing.Point(18, 54)
+$versions.AutoSize = $true
+$versions.ForeColor = $mutedText
+
+$newVersion = New-Object System.Windows.Forms.Label
+$newVersion.Text = "Новая версия: $NewVersion"
+$newVersion.Location = New-Object System.Drawing.Point(18, 76)
+$newVersion.AutoSize = $true
+$newVersion.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$newVersion.ForeColor = $accent
+
+$sizeText = if ($PackageBytes -gt 0) { "Размер обновления: $([math]::Round($PackageBytes / 1MB, 1)) МБ" } else { 'Размер обновления: определяется при скачивании' }
+$sizeLabel = New-Object System.Windows.Forms.Label
+$sizeLabel.Text = $sizeText
+$sizeLabel.Location = New-Object System.Drawing.Point(18, 100)
+$sizeLabel.AutoSize = $true
+$sizeLabel.ForeColor = $mutedText
 
 $notes = New-Object System.Windows.Forms.TextBox
-$notes.Location = New-Object System.Drawing.Point(16, 76)
-$notes.Size = New-Object System.Drawing.Size(416, 150)
+$notes.Location = New-Object System.Drawing.Point(18, 132)
+$notes.Size = New-Object System.Drawing.Size(440, 150)
 $notes.Multiline = $true
 $notes.ReadOnly = $true
 $notes.ScrollBars = 'Vertical'
-$notes.Text = $ReleaseNotes
-
-$cancelButton = New-Object System.Windows.Forms.Button
-$cancelButton.Text = 'Отмена'
-$cancelButton.Size = New-Object System.Drawing.Size(104, 28)
-$cancelButton.Location = New-Object System.Drawing.Point(328, 240)
-$cancelButton.DialogResult = 'Cancel'
+$notes.BorderStyle = 'FixedSingle'
+$notes.BackColor = [System.Drawing.Color]::FromArgb(248, 248, 248)
+if ([string]::IsNullOrWhiteSpace($ReleaseNotes)) {
+    $notes.Text = 'Новая версия готова. JARVIS скачает и установит её автоматически — с прогрессом и откатом при ошибке.'
+} else {
+    $notes.Text = $ReleaseNotes
+}
 
 $updateButton = New-Object System.Windows.Forms.Button
-$updateButton.Text = 'Обновить'
-$updateButton.Size = New-Object System.Drawing.Size(104, 28)
-$updateButton.Location = New-Object System.Drawing.Point(216, 240)
+$updateButton.Text = 'Обновить сейчас'
+$updateButton.Size = New-Object System.Drawing.Size(180, 40)
+$updateButton.Location = New-Object System.Drawing.Point(278, 296)
+$updateButton.BackColor = $accent
+$updateButton.ForeColor = [System.Drawing.Color]::White
+$updateButton.FlatStyle = 'Flat'
+$updateButton.FlatAppearance.BorderSize = 0
+$updateButton.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
 $updateButton.DialogResult = 'OK'
+$updateButton.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+$laterButton = New-Object System.Windows.Forms.Button
+$laterButton.Text = 'Позже'
+$laterButton.Size = New-Object System.Drawing.Size(120, 40)
+$laterButton.Location = New-Object System.Drawing.Point(152, 296)
+$laterButton.FlatStyle = 'Flat'
+$laterButton.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+$laterButton.ForeColor = $mutedText
+$laterButton.DialogResult = 'Cancel'
 
 $form.AcceptButton = $updateButton
-$form.CancelButton = $cancelButton
-$form.Controls.Add($header)
-$form.Controls.Add($notesLabel)
+$form.CancelButton = $laterButton
+$form.Controls.Add($title)
+$form.Controls.Add($versions)
+$form.Controls.Add($newVersion)
+$form.Controls.Add($sizeLabel)
 $form.Controls.Add($notes)
-$form.Controls.Add($cancelButton)
 $form.Controls.Add($updateButton)
+$form.Controls.Add($laterButton)
 
 try {
     $result = $form.ShowDialog()

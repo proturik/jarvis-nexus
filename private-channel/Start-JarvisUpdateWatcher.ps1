@@ -47,11 +47,10 @@ while ($true) {
             }
             if (-not $notifiedFor.ContainsKey($newVersion)) {
                 $notifiedFor[$newVersion] = $true
-                if (Test-Path -LiteralPath $notificationScript -PathType Leaf) {
-                    & $notificationScript -CurrentVersion $currentVersion -NewVersion $newVersion | Out-Null
-                }
-                # Auto-update immediately: download, verify, hand-off, progress HUD.
-                & $updaterScript -ProgramRoot $ProgramRoot -IndexUrl $IndexUrl -DataRoot $DataRoot -StateRoot $StateRoot -Port $Port -PublicKeyPath $PublicKeyPath -AutoConfirm -Progress | Out-Null
+                # Show the «Обновить сейчас» button. On press the updater
+                # downloads, verifies, installs and restarts with the progress HUD;
+                # on «Позже» it returns and we ask again next session.
+                & $updaterScript -ProgramRoot $ProgramRoot -IndexUrl $IndexUrl -DataRoot $DataRoot -StateRoot $StateRoot -Port $Port -PublicKeyPath $PublicKeyPath | Out-Null
             }
         }
     } catch {

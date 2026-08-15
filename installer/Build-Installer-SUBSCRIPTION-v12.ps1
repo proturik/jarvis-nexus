@@ -357,12 +357,13 @@ if (Test-Path -LiteralPath $BrainInstaller -PathType Leaf) {
     }
 }
 
-# --- Signed auto-update check (fully automatic: downloads, verifies and
-#     activates with the progress HUD; no user interaction required) ---
+# --- Signed auto-update check: shows the «Обновить сейчас» button when a newer
+#     release exists; on press it downloads, verifies, installs and restarts
+#     with the progress HUD. «Позже» just continues with the current version. ---
 $UpdaterScript = Join-Path $AppRoot 'private-channel\Invoke-JarvisUpdate.ps1'
 if (Test-Path -LiteralPath $UpdaterScript -PathType Leaf) {
     try {
-        & $UpdaterScript -ProgramRoot $AppRoot -IndexUrl $UpdateIndexUrl -DataRoot $DataRoot -StateRoot (Join-Path $InstallRoot 'update-state') -Port 3791 -AutoConfirm -Progress | Out-Null
+        & $UpdaterScript -ProgramRoot $AppRoot -IndexUrl $UpdateIndexUrl -DataRoot $DataRoot -StateRoot (Join-Path $InstallRoot 'update-state') -Port 3791 | Out-Null
     }
     catch {
         Write-Warning "JARVIS update check failed: $($_.Exception.Message)"
