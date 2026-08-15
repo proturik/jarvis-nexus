@@ -93,22 +93,15 @@ releases/<releaseId>/<releaseId>.update.json
 releases/<releaseId>/jarvis-<version>.zip
 ```
 
-Owner workflow for one release:
+Owner workflow for one release — the publisher script assembles the payload ZIP (excluding `data/`, `.env` and `private-channel/`), signs the manifest, records the release in `releases.json` and re-signs the index in one step:
 
 ```powershell
-# 1. Build the update ZIP (a payload/ tree with .jarvis-program-marker), then sign its manifest.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\New-JarvisSignedEnvelope.ps1 -Kind update -OutputPath .\site\releases\jarvis-1.1.0\jarvis-1.1.0.update.json -Version 1.1.0 -ReleaseId jarvis-1.1.0 -PackagePath .\jarvis-1.1.0.zip -ValidDays 7
-
-# 2. Copy the package into place and record its hashes (also the manifest hash) in releases.json.
-Copy-Item .\jarvis-1.1.0.zip .\site\releases\jarvis-1.1.0\jarvis-1.1.0.zip
-(Get-FileHash .\jarvis-1.1.0.zip -Algorithm SHA256).Hash
-(Get-FileHash .\site\releases\jarvis-1.1.0\jarvis-1.1.0.update.json -Algorithm SHA256).Hash
-
-# 3. Sign the index (releases.json lists every published release).
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\New-JarvisReleaseIndex.ps1 -OutputPath .\site\release-index.json -ReleasesJsonPath .\releases.json -ValidDays 7
-
-# 4. Publish site/ to the Pages branch (or the folder Pages is configured to serve) and push.
+# ProgramRoot must already be a versioned program-only directory:
+# it contains .jarvis-program-marker and a version.txt equal to -Version.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Publish-JarvisRelease.ps1 -ProgramRoot C:\release\app-1.1.0 -Version 1.1.0 -ReleaseId jarvis-1.1.0 -SiteRoot .\site -PublicUrlBase https://USER.github.io/jarvis-nexus -ValidDays 7
 ```
+
+Then publish `site/` to the Pages branch (or the folder Pages is configured to serve) and push. The low-level manual path (ZIP → `New-JarvisSignedEnvelope` → hashes → `New-JarvisReleaseIndex`) remains available if finer control is needed.
 
 `releases.json` entry example:
 
