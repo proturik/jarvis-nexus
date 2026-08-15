@@ -47,7 +47,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.2.0'
+$Version = '1.2.2'
 $ReleaseId = 'subscription-v12'
 $ProductName = 'JARVIS NEXUS ULTRA'
 $MarkerContent = 'JARVIS NEXUS ULTRA program directory v1'
@@ -241,7 +241,7 @@ Copy-Tree (Join-Path $projectRoot 'private-channel') $appPayload 'private-channe
 # program-only directory the updater can replace atomically.
 Write-Utf8NoBom (Join-Path $appPayload '.jarvis-program-marker') $MarkerContent
 Write-Utf8NoBom (Join-Path $appPayload 'version.txt') $Version
-Write-Utf8NoBom (Join-Path $appPayload 'release.json') '{"releaseId":"subscription-v12","version":"1.2.0"}'
+Write-Utf8NoBom (Join-Path $appPayload 'release.json') '{"releaseId":"subscription-v12","version":"1.2.2"}'
 
 # Bundled runtime.
 Copy-Item -LiteralPath $nodePath -Destination (Join-Path $runtimePayload 'node.exe') -Force
@@ -342,6 +342,18 @@ if (Test-Path -LiteralPath $SubscriptionGate -PathType Leaf) {
     if ($gateExit -ne 0) {
         Write-Error "JARVIS NEXUS ULTRA subscription check failed (exit code $gateExit). Install a valid license and try again."
         exit $gateExit
+    }
+}
+
+# --- Local brain bootstrap (Ollama + qwen3:8b) ---
+# First launch downloads and installs the brain automatically; no user setup.
+$BrainInstaller = Join-Path $AppRoot 'private-channel\Install-JarvisBrain.ps1'
+if (Test-Path -LiteralPath $BrainInstaller -PathType Leaf) {
+    try {
+        & $BrainInstaller
+    }
+    catch {
+        Write-Warning "JARVIS brain install failed: $($_.Exception.Message)"
     }
 }
 

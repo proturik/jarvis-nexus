@@ -90,6 +90,7 @@ try {
         'Jarvis.UpdateState.psm1',
         'Jarvis.ReleaseIndex.psm1',
         'Jarvis.Subscription.psm1',
+        'Install-JarvisBrain.ps1',
         'Invoke-JarvisUpdate.ps1',
         'Invoke-JarvisHandoff.ps1',
         'Invoke-JarvisStagedUpdate.ps1',
