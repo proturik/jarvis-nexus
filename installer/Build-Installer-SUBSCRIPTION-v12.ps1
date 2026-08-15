@@ -47,7 +47,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.3.0'
+$Version = '1.3.1'
 $ReleaseId = 'subscription-v12'
 $ProductName = 'JARVIS NEXUS ULTRA'
 $MarkerContent = 'JARVIS NEXUS ULTRA program directory v1'
@@ -241,7 +241,7 @@ Copy-Tree (Join-Path $projectRoot 'private-channel') $appPayload 'private-channe
 # program-only directory the updater can replace atomically.
 Write-Utf8NoBom (Join-Path $appPayload '.jarvis-program-marker') $MarkerContent
 Write-Utf8NoBom (Join-Path $appPayload 'version.txt') $Version
-Write-Utf8NoBom (Join-Path $appPayload 'release.json') '{"releaseId":"subscription-v12","version":"1.3.0"}'
+Write-Utf8NoBom (Join-Path $appPayload 'release.json') '{"releaseId":"subscription-v12","version":"1.3.1"}'
 
 # Bundled runtime.
 Copy-Item -LiteralPath $nodePath -Destination (Join-Path $runtimePayload 'node.exe') -Force
@@ -421,6 +421,23 @@ $HealthCheck = Join-Path $AppRoot 'private-channel\Test-JarvisHealth.ps1'
 if (Test-Path -LiteralPath $HealthCheck -PathType Leaf) {
     & $HealthCheck -InstallRoot $AppRoot -DataRoot $DataRoot -Port '3791' -ShowIfFail | Out-Null
 }
+
+# --- Desktop shortcut with the JARVIS icon (created once, never overwritten) ---
+$launcherCmd = Join-Path $PSScriptRoot 'Start-Jarvis-RELEASE.cmd'
+$desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'JARVIS NEXUS ULTRA.lnk'
+if ((Test-Path -LiteralPath $launcherCmd -PathType Leaf) -and -not (Test-Path -LiteralPath $desktopLink -PathType Leaf)) {
+    try {
+        $iconPath = Join-Path $InstallRoot 'desktop-shell\JarvisPet.exe'
+        if (-not (Test-Path -LiteralPath $iconPath -PathType Leaf)) { $iconPath = Join-Path $AppRoot 'assets\jarvis-nexus.ico' }
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($desktopLink)
+        $shortcut.TargetPath = $launcherCmd
+        $shortcut.WorkingDirectory = $PSScriptRoot
+        if (Test-Path -LiteralPath $iconPath -PathType Leaf) { $shortcut.IconLocation = $iconPath + ',0' }
+        $shortcut.Description = 'JARVIS NEXUS ULTRA - local voice assistant'
+        $shortcut.Save()
+    } catch { }
+}
 '@
 
 $purchaseUrlLiteral = "'" + $PurchaseUrl.Replace("'", "''") + "'"
@@ -523,7 +540,7 @@ function New-DesktopShortcut {
     } else {
         $shortcut.IconLocation = $IconPath + ',0'
     }
-    $shortcut.Description = 'JARVIS NEXUS ULTRA — локальный голосовой ассистент'
+    $shortcut.Description = 'JARVIS NEXUS ULTRA - local voice assistant'
     $shortcut.Save()
     return $true
 }
