@@ -907,7 +907,7 @@ function yesterdaySummary() {
 }
 
 function localReply(message, operation) {
-  if (operation.kind === 'chat') return `${streetPrefix()} местный мозг ещё грузится. Не буду сыпать тебе инструкциями вместо живого ответа — повтори фразу через пару секунд.`;
+  if (operation.kind === 'chat') return `${streetPrefix()} локальный мозг недоступен: не установлен Ollama с моделью qwen3:8b. Установи Ollama с https://ollama.com и выполни «ollama pull qwen3:8b», либо укажи OPENAI_API_KEY в .env для облачного ответа.`;
   if (operation.kind === 'remember') return `${streetPrefix()} записал. После перезагрузки это останется в твоей локальной памяти.`;
   if (operation.kind === 'task') return `${streetPrefix()} задача в очереди. Я её не потеряю после рестарта.`;
   if (operation.kind === 'set_name') return `${streetPrefix()} запомнил: тебя зовут ${operation.name}.`;
