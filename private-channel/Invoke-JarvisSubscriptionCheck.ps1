@@ -23,11 +23,11 @@ Add-Type -AssemblyName System.Drawing -ErrorAction Stop
 Import-Module (Join-Path $PSScriptRoot 'Jarvis.Subscription.psm1') -Force -ErrorAction Stop
 
 function Show-SubscriptionRequiredDialog {
-    param([Parameter(Mandatory)][string]$PurchaseUrl)
+    param([Parameter(Mandatory)][string]$PurchaseUrl, [Parameter(Mandatory)][string]$InstallId)
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = 'Требуется подписка JARVIS'
-    $form.Size = New-Object System.Drawing.Size(500, 250)
+    $form.Size = New-Object System.Drawing.Size(520, 340)
     $form.StartPosition = 'CenterScreen'
     $form.TopMost = $true
     $form.FormBorderStyle = 'FixedDialog'
@@ -36,19 +36,60 @@ function Show-SubscriptionRequiredDialog {
     $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
     $message = New-Object System.Windows.Forms.Label
-    $message.Location = New-Object System.Drawing.Point(16, 16)
-    $message.Size = New-Object System.Drawing.Size(460, 140)
-    $message.Text = "Для использования JARVIS NEXUS требуется активная подписка.`r`n`r`nПробный период завершён, лицензия не найдена или недействительна.`r`nОформите подписку и поместите файл лицензии в папку license внутри каталога данных.`r`n`r`nАдрес оформления подписки:`r`n$PurchaseUrl"
+    $message.Location = New-Object System.Drawing.Point(16, 12)
+    $message.Size = New-Object System.Drawing.Size(488, 110)
+    $message.Text = "JARVIS NEXUS требует активную подписку.`r`n`r`n1. Скопируйте ваш код установки ниже и отправьте его владельцу.`r`n2. Полученный файл лицензии положите в папку license каталога данных JARVIS.`r`n3. Снова запустите JARVIS."
+
+    $idLabel = New-Object System.Windows.Forms.Label
+    $idLabel.Text = 'Ваш код установки:'
+    $idLabel.Location = New-Object System.Drawing.Point(16, 126)
+    $idLabel.AutoSize = $true
+
+    $idBox = New-Object System.Windows.Forms.TextBox
+    $idBox.Text = $InstallId
+    $idBox.Location = New-Object System.Drawing.Point(16, 148)
+    $idBox.Size = New-Object System.Drawing.Size(488, 22)
+    $idBox.ReadOnly = $true
+    $idBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+
+    $copyButton = New-Object System.Windows.Forms.Button
+    $copyButton.Text = 'Скопировать код'
+    $copyButton.Size = New-Object System.Drawing.Size(140, 28)
+    $copyButton.Location = New-Object System.Drawing.Point(16, 178)
+    $copyButton.Add_Click({
+        try {
+            [System.Windows.Forms.Clipboard]::SetText($InstallId)
+            $copyButton.Text = 'Скопировано!'
+        } catch {
+            $copyButton.Text = 'Выделите и Ctrl+C'
+        }
+    })
+
+    $licenseLabel = New-Object System.Windows.Forms.Label
+    $licenseLabel.Location = New-Object System.Drawing.Point(16, 216)
+    $licenseLabel.Size = New-Object System.Drawing.Size(488, 44)
+    $licenseLabel.Text = "Каталог данных: %LOCALAPPDATA%\JARVIS NEXUS ULTRA\data`r`nЛицензия: data\license\license.json"
+
+    $purchaseLink = New-Object System.Windows.Forms.LinkLabel
+    $purchaseLink.Text = $PurchaseUrl
+    $purchaseLink.Location = New-Object System.Drawing.Point(16, 266)
+    $purchaseLink.Size = New-Object System.Drawing.Size(488, 20)
+    $purchaseLink.Add_Click({ [System.Diagnostics.Process]::Start($PurchaseUrl) })
 
     $okButton = New-Object System.Windows.Forms.Button
     $okButton.Text = 'OK'
     $okButton.Size = New-Object System.Drawing.Size(104, 28)
-    $okButton.Location = New-Object System.Drawing.Point(372, 172)
+    $okButton.Location = New-Object System.Drawing.Point(400, 262)
     $okButton.DialogResult = 'OK'
 
     $form.AcceptButton = $okButton
     $form.CancelButton = $okButton
     $form.Controls.Add($message)
+    $form.Controls.Add($idLabel)
+    $form.Controls.Add($idBox)
+    $form.Controls.Add($copyButton)
+    $form.Controls.Add($licenseLabel)
+    $form.Controls.Add($purchaseLink)
     $form.Controls.Add($okButton)
 
     try {
@@ -80,7 +121,7 @@ try {
 }
 
 if ($null -eq $subscription) {
-    Show-SubscriptionRequiredDialog -PurchaseUrl $PurchaseUrl
+    Show-SubscriptionRequiredDialog -PurchaseUrl $PurchaseUrl -InstallId $installId
     exit 1
 }
 
