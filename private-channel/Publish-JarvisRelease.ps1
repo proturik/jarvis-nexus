@@ -79,6 +79,31 @@ try {
     $privateChannel = Join-Path $payloadRoot 'private-channel'
     if (Test-Path -LiteralPath $privateChannel -PathType Container) { Remove-Item -LiteralPath $privateChannel -Recurse -Force }
 
+    # Ship the client-side updater inside the program directory so every install
+    # can check and apply updates at startup. Owner-only and test scripts are
+    # never bundled; the production public key travels with the client.
+    $bundleRoot = Join-Path $payloadRoot 'private-channel'
+    New-Item -ItemType Directory -Path $bundleRoot | Out-Null
+    $repoChannel = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))) 'private-channel'
+    $clientFiles = @(
+        'Jarvis.PrivateChannel.psm1',
+        'Jarvis.UpdateState.psm1',
+        'Jarvis.ReleaseIndex.psm1',
+        'Invoke-JarvisUpdate.ps1',
+        'Invoke-JarvisHandoff.ps1',
+        'Invoke-JarvisStagedUpdate.ps1',
+        'Restore-JarvisUpdateBackup.ps1',
+        'Stop-JarvisProgram.ps1',
+        'Start-JarvisProgram.ps1',
+        'Show-JarvisUpdatePrompt.ps1',
+        'public-key.xml'
+    )
+    foreach ($name in $clientFiles) {
+        $source = Join-Path $repoChannel $name
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Client updater file is missing from the repository: $source" }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $bundleRoot $name) -Force
+    }
+
     $stream = New-Object IO.FileStream($tempZip, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     $zip = New-Object IO.Compression.ZipArchive($stream, [IO.Compression.ZipArchiveMode]::Create, $false)
     try {

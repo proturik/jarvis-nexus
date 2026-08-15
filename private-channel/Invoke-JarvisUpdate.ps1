@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path $env:LOCALAPPDATA 'JARVIS NEXUS ULTRA\update-state'),
     [string]$DataRoot = (Join-Path $env:LOCALAPPDATA 'JARVIS NEXUS ULTRA\data'),
     [int]$Port = 3791,
-    [string]$PublicKeyPath = (Join-Path $PSScriptRoot 'public-key.xml'),
+    [string]$PublicKeyPath = '',
     [string]$PinnedPublicKeyFingerprint = '',
     [int]$StopTimeoutSeconds = 30,
     [int]$HealthTimeoutSeconds = 60,
@@ -31,6 +31,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Jarvis.ReleaseIndex.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Jarvis.UpdateState.psm1') -Force
+if ([string]::IsNullOrWhiteSpace($PublicKeyPath)) { $PublicKeyPath = Join-Path $PSScriptRoot 'public-key.xml' }
 
 $installFull = [IO.Path]::GetFullPath($ProgramRoot).TrimEnd('\')
 

@@ -14,7 +14,7 @@ param(
     [string]$StateRoot = (Join-Path $env:LOCALAPPDATA 'JARVIS NEXUS ULTRA\update-state'),
     [string]$DataRoot = (Join-Path $env:LOCALAPPDATA 'JARVIS NEXUS ULTRA\data'),
     [int]$Port = 3791,
-    [string]$PublicKeyPath = (Join-Path $PSScriptRoot 'public-key.xml'),
+    [string]$PublicKeyPath = '',
     [string]$PinnedPublicKeyFingerprint = '',
     [int]$StopTimeoutSeconds = 30,
     [int]$HealthTimeoutSeconds = 60
@@ -23,9 +23,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Jarvis.UpdateState.psm1') -Force
+if ([string]::IsNullOrWhiteSpace($PublicKeyPath)) { $PublicKeyPath = Join-Path $PSScriptRoot 'public-key.xml' }
 
 $installFull = [IO.Path]::GetFullPath($ProgramRoot).TrimEnd('\')
 Test-JarvisProgramMarker -Directory $installFull
+
+# After activation the program directory is replaced atomically, so this script's
+# own $PSScriptRoot becomes stale (it points at the just-moved backup). Resolve the
+# restart helper from the NEW program directory, falling back to $PSScriptRoot for
+# in-place (non-self-updating) runs.
+$startHelper = Join-Path $installFull 'private-channel\Start-JarvisProgram.ps1'
+if (-not (Test-Path -LiteralPath $startHelper -PathType Leaf)) { $startHelper = Join-Path $PSScriptRoot 'Start-JarvisProgram.ps1' }
 
 $stopCompleted = $false
 try {
@@ -36,7 +44,7 @@ try {
         -InstallRoot $installFull -CurrentVersion $CurrentVersion -StateRoot $StateRoot -Activate `
         -PublicKeyPath $PublicKeyPath -PinnedPublicKeyFingerprint $PinnedPublicKeyFingerprint
 
-    $start = & (Join-Path $PSScriptRoot 'Start-JarvisProgram.ps1') -ProgramRoot $installFull -Port $Port -DataRoot $DataRoot -HealthTimeoutSeconds $HealthTimeoutSeconds
+    $start = & $startHelper -ProgramRoot $installFull -Port $Port -DataRoot $DataRoot -HealthTimeoutSeconds $HealthTimeoutSeconds
 
     [pscustomobject]@{
         Ok = $update.Ok
@@ -55,7 +63,7 @@ try {
         # back in place (either never replaced or restored by the updater's
         # rollback). Best-effort restart of the previous program.
         try {
-            & (Join-Path $PSScriptRoot 'Start-JarvisProgram.ps1') -ProgramRoot $installFull -Port $Port -DataRoot $DataRoot -HealthTimeoutSeconds $HealthTimeoutSeconds | Out-Null
+            & $startHelper -ProgramRoot $installFull -Port $Port -DataRoot $DataRoot -HealthTimeoutSeconds $HealthTimeoutSeconds | Out-Null
         } catch {
             Write-Warning "Hand-off failed and restart of the previous program also failed: $($_.Exception.Message)"
         }

@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory)][string]$InstallRoot,
     [Parameter(Mandatory)][string]$CurrentVersion,
     [string]$StateRoot = (Join-Path $env:LOCALAPPDATA 'JARVIS NEXUS ULTRA\update-state'),
-    [string]$PublicKeyPath = (Join-Path $PSScriptRoot 'public-key.xml'),
+    [string]$PublicKeyPath = '',
     [string]$PinnedPublicKeyFingerprint = '',
     [ValidateRange(1, 8192)][int]$MaxFiles = 4096,
     [ValidateRange(1048576, 4294967296)][long]$MaxExpandedBytes = 1073741824,
@@ -17,6 +17,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
 Import-Module (Join-Path $PSScriptRoot 'Jarvis.PrivateChannel.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'Jarvis.UpdateState.psm1') -Force
+if ([string]::IsNullOrWhiteSpace($PublicKeyPath)) { $PublicKeyPath = Join-Path $PSScriptRoot 'public-key.xml' }
 
 function Assert-SafeExistingPath {
     param([Parameter(Mandatory)][string]$Path, [switch]$AllowMissingLeaf)

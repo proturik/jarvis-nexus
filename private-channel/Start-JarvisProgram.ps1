@@ -25,12 +25,19 @@ $dataFull = [IO.Path]::GetFullPath($DataRoot)
 New-Item -ItemType Directory -Path $dataFull -Force | Out-Null
 
 if ([string]::IsNullOrWhiteSpace($NodePath)) {
-    $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $nodeCommand) { $nodeCommand = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1 }
-    if ($null -eq $nodeCommand -or [string]::IsNullOrWhiteSpace([string]$nodeCommand.Source)) {
-        throw 'Node.js is unavailable; the JARVIS core cannot be started.'
+    # Prefer the install's own bundled node (install-root\runtime\node.exe) so a
+    # hand-off restart never depends on a system-wide node being on PATH.
+    $bundledNode = Join-Path (Split-Path -Parent $installFull) 'runtime\node.exe'
+    if (Test-Path -LiteralPath $bundledNode -PathType Leaf) {
+        $NodePath = $bundledNode
+    } else {
+        $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $nodeCommand) { $nodeCommand = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1 }
+        if ($null -eq $nodeCommand -or [string]::IsNullOrWhiteSpace([string]$nodeCommand.Source)) {
+            throw 'Node.js is unavailable; the JARVIS core cannot be started.'
+        }
+        $NodePath = [string]$nodeCommand.Source
     }
-    $NodePath = [string]$nodeCommand.Source
 }
 if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) { throw "Node executable not found: $NodePath" }
 
