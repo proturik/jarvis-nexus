@@ -151,8 +151,15 @@ function Test-JarvisSignedEnvelopeCore {
         if ($licenseId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{5,79}$') { throw 'Licence ID format is invalid.' }
         $allowed = @((Get-RequiredProperty $payload 'installIds')) | ForEach-Object { [string]$_ }
         if ($allowed -notcontains $InstallId) { throw 'This installation is not authorised by the licence.' }
+        $tier = 'lifetime'
+        if ($null -ne $payload.PSObject.Properties['tier']) { $tier = ([string]$payload.tier).ToLowerInvariant() }
+        if ($tier -notin @('monthly', 'yearly', 'lifetime')) { throw 'Licence tier is invalid.' }
+        $validDays = ($expiresAt - $issuedAt).TotalDays
+        if ($tier -eq 'monthly' -and $validDays -gt 31) { throw 'Licence validity period does not match its tier.' }
+        if ($tier -eq 'yearly' -and $validDays -gt 366) { throw 'Licence validity period does not match its tier.' }
+        if ($tier -eq 'lifetime' -and $validDays -gt 3651) { throw 'Licence validity period does not match its tier.' }
         return [pscustomobject]@{
-            Ok = $true; Kind = 'license'; LicenseId = $licenseId
+            Ok = $true; Kind = 'license'; LicenseId = $licenseId; Tier = $tier
             Issuer = 'JARVIS NEXUS PRIVATE'; KeyFingerprint = $actualFingerprint
             Features = @((Get-RequiredProperty $payload 'features')); ExpiresAt = $expiresAt
         }

@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory, ParameterSetName = 'update')][string]$PackagePath,
     [Parameter(Mandatory, ParameterSetName = 'update')][string]$Version,
     [Parameter(Mandatory, ParameterSetName = 'update')][string]$ReleaseId,
-    [ValidateRange(0, 3650)][int]$ValidDays = 0
+    [Parameter(ParameterSetName = 'license')][ValidateSet('monthly', 'yearly', 'lifetime')][string]$Tier = 'lifetime',
+    [ValidateRange(0, 3651)][int]$ValidDays = 0
 )
 
 Set-StrictMode -Version Latest
@@ -84,9 +85,19 @@ try {
     if ($publicFingerprint -ne [string]$metadata.publicKeyFingerprint) { throw 'Signing-key metadata fingerprint mismatch.' }
 
     $now = [DateTimeOffset]::UtcNow
-    $effectiveValidDays = if ($PSBoundParameters.ContainsKey('ValidDays')) { $ValidDays } elseif ($Kind -eq 'license') { 365 } else { 7 }
+    $effectiveValidDays = if ($PSBoundParameters.ContainsKey('ValidDays')) {
+        $ValidDays
+    } elseif ($Kind -eq 'license') {
+        if ($Tier -eq 'monthly') { 31 } elseif ($Tier -eq 'yearly') { 366 } else { 3651 }
+    } else { 7 }
     if ($effectiveValidDays -lt 1) { throw 'ValidDays must be at least 1.' }
     if ($Kind -eq 'update' -and $effectiveValidDays -gt 31) { throw 'Update manifests cannot be valid for more than 31 days.' }
+    if ($Kind -eq 'license') {
+        $tierLower = $Tier.ToLowerInvariant()
+        $tierMaxDays = 3651
+        if ($tierLower -eq 'monthly') { $tierMaxDays = 31 } elseif ($tierLower -eq 'yearly') { $tierMaxDays = 366 }
+        if ($effectiveValidDays -gt $tierMaxDays) { throw "Tier '$tierLower' licences cannot be valid for more than $tierMaxDays days." }
+    }
     $common = [ordered]@{
         kind = $Kind; schemaVersion = 1; issuer = 'JARVIS NEXUS PRIVATE'
         keyFingerprint = $publicFingerprint; notBefore = $now.AddMinutes(-1).ToString('o')
@@ -101,6 +112,7 @@ try {
         if ($features.Count -eq 0 -or $features.Count -gt 32) { throw 'A licence must contain between 1 and 32 features.' }
         foreach ($name in $features) { if ($name -notmatch '^[a-z][a-z0-9._-]{1,39}$') { throw "Unsafe feature name: $name" } }
         $common.licenseId = $LicenseId; $common.installIds = $ids; $common.features = $features
+        $common.tier = $Tier.ToLowerInvariant()
     } else {
         if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Version must be numeric semantic versioning, for example 1.2.3.' }
         if ($ReleaseId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$') { throw 'ReleaseId format is invalid.' }
