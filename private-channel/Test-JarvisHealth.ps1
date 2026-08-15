@@ -160,12 +160,46 @@ try {
     Add-Check 'Канал обновлений' $false 'нет сети или канал недоступен'
 }
 
-# --- Subscription license (informational) ---
+# --- Native companions (Pet window / Sense) ---
+$installParent = Split-Path -Parent $installFull
+$petExe = Join-Path $installParent 'desktop-shell\JarvisPet.exe'
+$senseExe = Join-Path $installParent 'desktop-shell\sense\JarvisSense.exe'
+Add-Check 'Окно JARVIS (JarvisPet.exe)' (Test-Path -LiteralPath $petExe -PathType Leaf) $petExe
+Add-Check 'Голос (JarvisSense.exe)' (Test-Path -LiteralPath $senseExe -PathType Leaf) $senseExe
+$senseInternal = Join-Path (Split-Path -Parent $senseExe) '_internal'
+Add-Check 'Библиотеки Sense (_internal)' (Test-Path -LiteralPath $senseInternal -PathType Container) $senseInternal
+
+# --- Install ID ---
+$installIdPath = Join-Path $DataRoot 'install-id.txt'
+if (Test-Path -LiteralPath $installIdPath -PathType Leaf) {
+    $installId = ([string](Get-Content -LiteralPath $installIdPath -Raw)).Trim()
+    Add-Check 'Код установки (install-id)' ($installId -match '^install-[A-Za-z0-9_-]{12,80}$') $installId
+} else {
+    Add-Check 'Код установки (install-id)' $false 'файл не создан (запустите лаунчер)'
+}
+
+# --- Subscription license (validated by signature, not just presence) ---
 $licensePath = Join-Path $DataRoot 'license\license.json'
 if (Test-Path -LiteralPath $licensePath -PathType Leaf) {
-    Add-Check 'Файл лицензии' $true $licensePath
+    $licenseValid = $false
+    $licenseDetail = 'лицензия найдена'
+    try {
+        $subscriptionModule = Join-Path $installFull 'private-channel\Jarvis.Subscription.psm1'
+        if (Test-Path -LiteralPath $subscriptionModule -PathType Leaf) {
+            Import-Module $subscriptionModule -Force -ErrorAction SilentlyContinue
+            if ($null -ne $installId -and $installId -match '^install-[A-Za-z0-9_-]{12,80}$') {
+                $sub = Test-JarvisSubscription -LicensePath $licensePath -InstallId $installId -PublicKeyPath $publicKeyPath
+                $licenseValid = ($null -ne $sub -and $sub.Licensed)
+                if ($licenseValid) { $licenseDetail = "tier=$($sub.Tier) licenseId=$($sub.LicenseId) до=$($sub.ExpiresAt.ToString('yyyy-MM-dd'))" }
+                else { $licenseDetail = 'лицензия недействительна для этого кода установки' }
+            }
+        }
+    } catch {
+        $licenseDetail = $_.Exception.Message
+    }
+    Add-Check 'Подписка (лицензия)' $licenseValid $licenseDetail
 } else {
-    Add-Check 'Файл лицензии' $false 'лицензия не найдена (требуется подписка)'
+    Add-Check 'Подписка (лицензия)' $false 'лицензия не найдена (требуется подписка)'
 }
 
 $failed = @($checks | Where-Object { $_.Status -eq 'FAIL' })
@@ -179,14 +213,32 @@ $result = [pscustomobject]@{
     Checks = @($checks)
 }
 
+# --- Human-readable report (text): the user can copy it and send it to the owner ---
+$reportLines = New-Object System.Collections.ArrayList
+[void]$reportLines.Add('=== JARVIS NEXUS ULTRA — диагностика ===')
+[void]$reportLines.Add(('Дата: ' + [DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')))
+[void]$reportLines.Add(('Версия: ' + $version))
+[void]$reportLines.Add(('Итог: ' + $(if ($allOk) { 'ВСЁ РАБОТАЕТ' } else { 'НАЙДЕНЫ ПРОБЛЕМЫ' })))
+[void]$reportLines.Add('')
+foreach ($check in @($checks)) {
+    [void]$reportLines.Add(('[' + $check.Status + '] ' + $check.Name + ' — ' + $check.Detail))
+}
+$reportText = ($reportLines -join "`r`n")
+
+$reportPath = Join-Path $DataRoot 'diagnostic-report.txt'
+try {
+    New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
+    [IO.File]::WriteAllText($reportPath, $reportText, (New-Object Text.UTF8Encoding($true)))
+} catch { }
+
 $showWindow = $ShowResult -or ($ShowIfFail -and -not $allOk)
 if ($showWindow) {
     Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
     Add-Type -AssemblyName System.Drawing -ErrorAction Stop
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Проверка JARVIS'
-    $form.Size = New-Object System.Drawing.Size(560, 420)
+    $form.Text = 'Диагностика JARVIS'
+    $form.Size = New-Object System.Drawing.Size(580, 470)
     $form.StartPosition = 'CenterScreen'
     $form.TopMost = $true
     $form.FormBorderStyle = 'FixedDialog'
@@ -196,19 +248,19 @@ if ($showWindow) {
 
     $header = New-Object System.Windows.Forms.Label
     $header.Location = New-Object System.Drawing.Point(16, 12)
-    $header.Size = New-Object System.Drawing.Size(520, 30)
+    $header.Size = New-Object System.Drawing.Size(540, 30)
     $header.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
     $header.Text = if ($allOk) { 'JARVIS готов к работе' } else { 'JARVIS нашёл проблемы' }
     $header.ForeColor = if ($allOk) { [System.Drawing.Color]::DarkGreen } else { [System.Drawing.Color]::DarkRed }
 
     $list = New-Object System.Windows.Forms.ListView
     $list.Location = New-Object System.Drawing.Point(16, 48)
-    $list.Size = New-Object System.Drawing.Size(520, 300)
+    $list.Size = New-Object System.Drawing.Size(540, 300)
     $list.View = 'Details'
     $list.FullRowSelect = $true
-    [void]$list.Columns.Add('Компонент', 240)
+    [void]$list.Columns.Add('Компонент', 230)
     [void]$list.Columns.Add('Статус', 60)
-    [void]$list.Columns.Add('Детали', 200)
+    [void]$list.Columns.Add('Детали', 220)
 
     foreach ($check in @($checks)) {
         $item = New-Object System.Windows.Forms.ListViewItem([string]$check.Name)
@@ -218,16 +270,30 @@ if ($showWindow) {
         [void]$list.Items.Add($item)
     }
 
+    $copyButton = New-Object System.Windows.Forms.Button
+    $copyButton.Text = 'Скопировать отчёт'
+    $copyButton.Size = New-Object System.Drawing.Size(150, 30)
+    $copyButton.Location = New-Object System.Drawing.Point(16, 360)
+    $copyButton.Add_Click({
+        try {
+            [System.Windows.Forms.Clipboard]::SetText($reportText)
+            $copyButton.Text = 'Скопировано! Отправьте владельцу.'
+        } catch {
+            $copyButton.Text = 'Отчёт: ' + $reportPath
+        }
+    })
+
     $okButton = New-Object System.Windows.Forms.Button
     $okButton.Text = 'OK'
-    $okButton.Size = New-Object System.Drawing.Size(104, 28)
-    $okButton.Location = New-Object System.Drawing.Point(432, 356)
+    $okButton.Size = New-Object System.Drawing.Size(104, 30)
+    $okButton.Location = New-Object System.Drawing.Point(452, 360)
     $okButton.DialogResult = 'OK'
 
     $form.AcceptButton = $okButton
     $form.CancelButton = $okButton
     $form.Controls.Add($header)
     $form.Controls.Add($list)
+    $form.Controls.Add($copyButton)
     $form.Controls.Add($okButton)
 
     try { $null = $form.ShowDialog() } finally { $form.Dispose() }

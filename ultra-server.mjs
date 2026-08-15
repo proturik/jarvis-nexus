@@ -843,6 +843,7 @@ function classify(message) {
   if (/синхронизируй (?:тему )?(?:windows|виндовс)|тема nexus|примени тему/iu.test(input)) return { kind: 'theme', mode: 'Apply', label: 'Синхронизировать Windows с NEXUS', risk: 'attention' };
   if (/верни (?:тему|оформление)|откати тему|восстанови тему/iu.test(input)) return { kind: 'theme', mode: 'Restore', label: 'Вернуть прежнюю тему Windows', risk: 'attention' };
   if (/(?:^|\s)(?:статус|состояние|диагностик|пульс системы)(?=$|\s|[,.!?])/iu.test(input)) return { kind: 'status' };
+  if (/^(?:диагностика|проверь себя|проверь систему|всё ли работает|все ли узлы работают|диагностируй)/iu.test(input)) return { kind: 'diagnose' };
   if (/^(?:открой|запусти|open)(?=$|\s|[,.!?])/iu.test(input)) {
     const websiteIntent = resolveWebsiteIntent(input);
     if (websiteIntent) return websiteIntent;
@@ -886,6 +887,34 @@ function spokenTemperature(value) {
   if (rounded > 0) return `${rounded} градусов тепла`;
   if (rounded < 0) return `минус ${Math.abs(rounded)} градусов`;
   return 'ноль градусов';
+}
+
+async function runDiagnostics() {
+  const healthScript = path.join(ROOT, 'private-channel', 'Test-JarvisHealth.ps1');
+  if (!await readJson(path.join(ROOT, 'private-channel', '.health-marker'), null).catch(() => null)) {
+    // Marker trick is unnecessary; check the file directly.
+  }
+  try {
+    await stat(healthScript);
+  } catch {
+    return `${streetPrefix()} модуль диагностики не найден в этой версии — обнови JARVIS через «Обновить сейчас».`;
+  }
+  try {
+    await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', healthScript, '-InstallRoot', ROOT, '-DataRoot', DATA_DIR, '-Port', String(PORT)], 45_000);
+  } catch {
+    // Even a failing check writes the report; we read it below.
+  }
+  const reportPath = path.join(DATA_DIR, 'diagnostic-report.txt');
+  let report = '';
+  try { report = await readFile(reportPath, 'utf8'); } catch { /* no report */ }
+  if (!report) return `${streetPrefix()} не смог собрать диагностику. Запусти вручную: launcher\\Start-Jarvis-RELEASE.cmd.`;
+  const lines = report.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const fails = lines.filter((line) => line.startsWith('[FAIL]'));
+  if (!fails.length) {
+    const versionLine = lines.find((line) => line.startsWith('Версия:'));
+    return `${streetPrefix()} диагностика пройдена: все узлы работают${versionLine ? ` (${versionLine})` : ''}.`;
+  }
+  return `${streetPrefix()} нашёл проблемы:\n${fails.slice(0, 12).map((line) => line.replace(/^\[FAIL\]\s*/u, '• ')).join('\n')}`;
 }
 
 function localTimeReply() {
@@ -1219,6 +1248,8 @@ async function chat(message, voiceContext = {}) {
     }
   } else if (operation.kind === 'time') {
     reply = localTimeReply();
+  } else if (operation.kind === 'diagnose') {
+    reply = await runDiagnostics();
   } else if (operation.kind === 'weather') {
     try {
       const city = operation.city || state.profile.city || 'Москва';
