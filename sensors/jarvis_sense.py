@@ -357,7 +357,7 @@ class Speaker:
         return self._last_finished_at
 
     def say(self, text: str, low_priority: bool = False) -> threading.Event | None:
-        message = clean_text(text, 320)
+        message = clean_text(text, 800)
         if not message or self._closed.is_set():
             return None
         if low_priority and (self.speaking or not self._queue.empty()):
@@ -536,7 +536,7 @@ class LocalTtsBridge:
                         body = json.dumps({"ok": True, **result}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                         self.send_response(200)
                     else:
-                        text = clean_text(payload.get("text"), 320)
+                        text = clean_text(payload.get("text"), 800)
                         if not text:
                             raise ValueError("empty text")
                         completion = bridge_speaker.say(text)

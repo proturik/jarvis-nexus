@@ -235,6 +235,7 @@ function sanitiseProfile(value) {
   const facts = Array.isArray(value?.facts) ? value.facts : [];
   return {
     name: clean(value?.name, 80),
+    city: clean(value?.city, 80),
     facts: facts
       .filter((fact) => typeof fact?.text === 'string')
       .slice(-100)
@@ -419,9 +420,10 @@ function streetPrefix() {
 
 function profileContext() {
   const name = state.profile.name ? `Пользователя зовут ${state.profile.name}.` : '';
+  const city = state.profile.city ? `Город пользователя: ${state.profile.city}.` : '';
   const facts = state.profile.facts.slice(-18).map((fact) => `- ${fact.text}`).join('\n');
   const notes = state.memories.slice(-12).map((memory) => `- ${memory.text}`).join('\n');
-  return [name, facts ? `Факты о пользователе:\n${facts}` : '', notes ? `Явно сохранённые заметки:\n${notes}` : ''].filter(Boolean).join('\n\n');
+  return [name, city, facts ? `Факты о пользователе:\n${facts}` : '', notes ? `Явно сохранённые заметки:\n${notes}` : ''].filter(Boolean).join('\n\n');
 }
 
 function systemPrompt(message = '') {
@@ -795,6 +797,8 @@ function classify(message) {
   if ((match = raw.match(/^(?:запомни|помни)\s*[:,—-]?\s*(.+)$/iu))) return { kind: 'remember', text: clean(match[1], 600) };
   if ((match = raw.match(/^(?:добавь\s+)?(?:задачу|напоминание|напомни)\s*[:,—-]?\s*(.+)$/iu))) return { kind: 'task', text: clean(match[1], 600) };
   if ((match = raw.match(/^(?:меня зовут|зови меня)\s+(.+)$/iu))) return { kind: 'set_name', name: clean(match[1], 80) };
+  if ((match = raw.match(/^(?:я живу в|мой город|живу в|я из)\s+(.+)$/iu))) return { kind: 'set_city', city: clean(match[1], 80) };
+  if (/^(?:который час|сколько времени|которое время|сколько сейчас времени|какое сейчас время)/iu.test(input)) return { kind: 'time' };
   if (/что мы (?:обсуждали|говорили) вчера|о ч[её]м мы вчера/iu.test(input)) return { kind: 'recall_yesterday' };
   if (/^(?:перемести|двинь)\s+(?:мышь|курсор)(?:\s+(?:на|в))?\s*(-?\d+)\s*[,; ]\s*(-?\d+)/iu.test(raw)) {
     match = raw.match(/(-?\d+)\s*[,; ]\s*(-?\d+)/u); return { kind: 'control', action: 'MoveMouse', x: Number(match[1]), y: Number(match[2]), label: `Переместить курсор в ${match[1]}, ${match[2]}`, risk: 'normal' };
@@ -875,6 +879,23 @@ async function discoverProfileFact(message) {
   return false;
 }
 
+function spokenTemperature(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 'неизвестно';
+  const rounded = Math.round(number);
+  if (rounded > 0) return `${rounded} градусов тепла`;
+  if (rounded < 0) return `минус ${Math.abs(rounded)} градусов`;
+  return 'ноль градусов';
+}
+
+function localTimeReply() {
+  const now = new Date();
+  const time = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(now);
+  const date = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' }).format(now);
+  const city = state.profile.city ? ` по твоему городу (${state.profile.city})` : '';
+  return `${streetPrefix()} сейчас ${time}, ${date}${city}.`;
+}
+
 function yesterdaySummary() {
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
@@ -890,6 +911,8 @@ function localReply(message, operation) {
   if (operation.kind === 'remember') return `${streetPrefix()} записал. После перезагрузки это останется в твоей локальной памяти.`;
   if (operation.kind === 'task') return `${streetPrefix()} задача в очереди. Я её не потеряю после рестарта.`;
   if (operation.kind === 'set_name') return `${streetPrefix()} запомнил: тебя зовут ${operation.name}.`;
+  if (operation.kind === 'set_city') return `${streetPrefix()} запомнил: твой город ${operation.city}. Теперь погоду буду считать для него.`;
+  if (operation.kind === 'time') return localTimeReply();
   if (operation.kind === 'recall_yesterday') return yesterdaySummary();
   if (operation.kind === 'status') { const system = systemSnapshot(); return `${streetPrefix()} ${system.cpuCores} потоков, память ${system.memoryPercent}%, аптайм ${system.uptimeMinutes} минут. Всё на связи.`; }
   if (operation.kind === 'app_choices') return `${streetPrefix()} нашёл несколько вариантов для «${operation.appName}»: ${operation.choices.join(' · ')}. Скажи название точнее, и открою нужное.`;
@@ -914,6 +937,12 @@ async function applyDirect(operation) {
     state.profile.updatedAt = new Date().toISOString();
     await writeJson(FILES.profile, state.profile);
     await logEvent('profile_saved', `Имя пользователя: ${operation.name}`);
+  }
+  if (operation.kind === 'set_city') {
+    state.profile.city = redactSensitiveText(operation.city, 80);
+    state.profile.updatedAt = new Date().toISOString();
+    await writeJson(FILES.profile, state.profile);
+    await logEvent('profile_saved', `Город пользователя: ${operation.city}`);
   }
 }
 
@@ -1139,7 +1168,7 @@ async function chat(message, voiceContext = {}) {
   await saveConversation('user', message);
   try { await mergeKnowledgeGraph(message); } catch { /* graph is best-effort */ }
   try { await buildGraphContext(message); } catch { /* graph context is best-effort */ }
-  if (['remember', 'task', 'set_name'].includes(operation.kind)) await applyDirect(operation);
+  if (['remember', 'task', 'set_name', 'set_city'].includes(operation.kind)) await applyDirect(operation);
 
   let action = null;
   let reply = visionReply;
@@ -1188,11 +1217,14 @@ async function chat(message, voiceContext = {}) {
     } catch (error) {
       reply = `${streetPrefix()} не смог поискать в сети: ${clean(error?.message, 200) || 'поиск недоступен'}.`;
     }
+  } else if (operation.kind === 'time') {
+    reply = localTimeReply();
   } else if (operation.kind === 'weather') {
     try {
-      const weather = await jarvisTools.getWeather(operation.city || 'Moscow');
+      const city = operation.city || state.profile.city || 'Москва';
+      const weather = await jarvisTools.getWeather(city);
       if (weather?.error) reply = `${streetPrefix()} погоду сейчас не достал: ${clean(weather.error, 200)}.`;
-      else reply = `Сейчас ${weather.location}: ${weather.temperatureC}°C (ощущается как ${weather.feelsLikeC}°C), ${weather.condition.toLowerCase()}. Сегодня от ${weather.todayMinC}°C до ${weather.todayMaxC}°C, влажность ${weather.humidityPercent}%.`;
+      else reply = `Сейчас в городе ${weather.location}: ${spokenTemperature(weather.temperatureC)}, ощущается как ${spokenTemperature(weather.feelsLikeC)}, ${weather.condition.toLowerCase()}. Сегодня от ${spokenTemperature(weather.todayMinC)} до ${spokenTemperature(weather.todayMaxC)}, влажность ${weather.humidityPercent} процентов.`;
     } catch (error) {
       reply = `${streetPrefix()} не смог узнать погоду: ${clean(error?.message, 200) || 'сервис недоступен'}.`;
     }

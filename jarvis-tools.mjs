@@ -216,15 +216,15 @@ export async function webSearch(query, { maxResults = 5, fetchImpl = fetch, reso
 
 function weatherCondition(code) {
   const value = Number(code);
-  if (value === 0) return 'clear';
-  if (value === 1 || value === 2) return 'partly cloudy';
-  if (value === 3) return 'overcast';
-  if (value === 45 || value === 48) return 'fog';
-  if (value >= 51 && value <= 67) return 'rain';
-  if (value >= 71 && value <= 77) return 'snow';
-  if (value >= 80 && value <= 82) return 'showers';
-  if (value >= 95 && value <= 99) return 'thunderstorm';
-  return 'unknown';
+  if (value === 0) return 'ясно';
+  if (value === 1 || value === 2) return 'переменная облачность';
+  if (value === 3) return 'пасмурно';
+  if (value === 45 || value === 48) return 'туман';
+  if (value >= 51 && value <= 67) return 'дождь';
+  if (value >= 71 && value <= 77) return 'снег';
+  if (value >= 80 && value <= 82) return 'ливни';
+  if (value >= 95 && value <= 99) return 'гроза';
+  return 'погода не определена';
 }
 
 function numberOrNull(value) {
@@ -238,13 +238,53 @@ async function fetchJson(url, fetchImpl) {
   return response.json().catch(() => null);
 }
 
+const CITY_ALIASES = Object.freeze({
+  питер: 'Санкт-Петербург',
+  спб: 'Санкт-Петербург',
+  петербург: 'Санкт-Петербург',
+  москве: 'Москва',
+  москву: 'Москва',
+  казани: 'Казань',
+  питере: 'Санкт-Петербург',
+  самаре: 'Самара',
+  самары: 'Самара',
+  самару: 'Самара',
+});
+
+function cityCandidates(city) {
+  const raw = clean(city, 120);
+  const lower = raw.toLocaleLowerCase('ru-RU');
+  const candidates = [];
+  if (CITY_ALIASES[lower]) candidates.push(CITY_ALIASES[lower]);
+  candidates.push(raw);
+  // Russian oblique-case fallbacks: geocoding often fails on «в Казани»,
+  // «в Москве», «в Питере», so retry with the trailing case ending stripped.
+  for (const suffix of ['ом', 'ой', 'ем', 'ей', 'его', 'ого', 'у', 'ю', 'е', 'и', 'а', 'я', 'ь']) {
+    if (raw.length - suffix.length >= 3 && lower.endsWith(suffix)) {
+      candidates.push(raw.slice(0, raw.length - suffix.length));
+      break;
+    }
+  }
+  return [...new Set(candidates)];
+}
+
+async function geocodeCity(place, fetchImpl) {
+  for (const candidate of cityCandidates(place)) {
+    for (const language of ['ru', 'en']) {
+      const geo = await fetchJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(candidate)}&count=1&language=${language}&format=json`, fetchImpl);
+      const first = Array.isArray(geo?.results) ? geo.results[0] : null;
+      if (first && typeof first.latitude === 'number' && typeof first.longitude === 'number') return first;
+    }
+  }
+  return null;
+}
+
 export async function getWeather(city, { fetchImpl = fetch } = {}) {
   const place = clean(city, 120);
   if (!place) return { error: 'weather unavailable' };
   try {
-    const geo = await fetchJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(place)}&count=1&language=en&format=json`, fetchImpl);
-    const first = Array.isArray(geo?.results) ? geo.results[0] : null;
-    if (!first || typeof first.latitude !== 'number' || typeof first.longitude !== 'number') return { error: 'weather unavailable' };
+    const first = await geocodeCity(place, fetchImpl);
+    if (!first) return { error: 'weather unavailable' };
     const data = await fetchJson(`https://api.open-meteo.com/v1/forecast?latitude=${first.latitude}&longitude=${first.longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code&daily=temperature_2m_max,temperature_2m_min&timezone=auto`, fetchImpl);
     if (!data) return { error: 'weather unavailable' };
     const current = data.current ?? {};

@@ -73,7 +73,7 @@ test('getWeather maps geocode and forecast including WMO weather codes', async (
   assert.equal(weather.temperatureC, 21.5);
   assert.equal(weather.feelsLikeC, 20.1);
   assert.equal(weather.humidityPercent, 66);
-  assert.equal(weather.condition, 'clear');
+  assert.equal(weather.condition, 'ясно');
   assert.equal(weather.todayMaxC, 24);
   assert.equal(weather.todayMinC, 14);
 });
@@ -84,7 +84,7 @@ test('getWeather maps rain from code 61 and fails gracefully', async () => {
     return jsonResponse({ current: { temperature_2m: 10, relative_humidity_2m: 80, apparent_temperature: 9, weather_code: 61 }, daily: { temperature_2m_max: [12], temperature_2m_min: [6] } });
   };
   const weather = await getWeather('Oslo', { fetchImpl });
-  assert.equal(weather.condition, 'rain');
+  assert.equal(weather.condition, 'дождь');
 
   const failed = await getWeather('Nowhere', { fetchImpl: async () => new Response('oops', { status: 500 }) });
   assert.deepEqual(failed, { error: 'weather unavailable' });
