@@ -47,7 +47,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.3.1'
+$Version = '1.3.2'
 $ReleaseId = 'subscription-v12'
 $ProductName = 'JARVIS NEXUS ULTRA'
 $MarkerContent = 'JARVIS NEXUS ULTRA program directory v1'
@@ -241,7 +241,7 @@ Copy-Tree (Join-Path $projectRoot 'private-channel') $appPayload 'private-channe
 # program-only directory the updater can replace atomically.
 Write-Utf8NoBom (Join-Path $appPayload '.jarvis-program-marker') $MarkerContent
 Write-Utf8NoBom (Join-Path $appPayload 'version.txt') $Version
-Write-Utf8NoBom (Join-Path $appPayload 'release.json') '{"releaseId":"subscription-v12","version":"1.3.1"}'
+Write-Utf8NoBom (Join-Path $appPayload 'release.json') '{"releaseId":"subscription-v12","version":"1.3.2"}'
 
 # Bundled runtime.
 Copy-Item -LiteralPath $nodePath -Destination (Join-Path $runtimePayload 'node.exe') -Force
