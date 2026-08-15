@@ -1,6 +1,6 @@
 # JARVIS NEXUS private licence and update channel
 
-This stage provides owner-only signing, strict offline verification, protected anti-replay state, safe ZIP staging, explicit activation and rollback, a signed HTTPS release index with a verified downloader, and an opt-in process hand-off with a minimal updater UI. It does not yet publish anything automatically and is not wired into the live launcher.
+This stage provides owner-only signing, strict offline verification, protected anti-replay state, safe ZIP staging, explicit activation and rollback, a signed HTTPS release index with a verified downloader, an opt-in process hand-off with a minimal updater UI, a program/data directory split, and an opt-in update check at startup. It does not yet publish anything automatically.
 
 ## Trust model
 
@@ -65,7 +65,7 @@ Rollback keeps the anti-replay floor at the newest accepted version:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Restore-JarvisUpdateBackup.ps1 -InstallRoot C:\JARVIS\app-current -BackupPath C:\JARVIS\.jarvis-backup-1.1.0-PASTE_ID
 ```
 
-The activation target must be a program-only/versioned directory. Do not point it at a root containing profile, memory, history or other user data. Installer and live-launcher integration remain paused.
+The activation target must be a program-only/versioned directory. Do not point it at a root containing profile, memory, history or other user data. Installer integration remains paused; launcher wiring is opt-in (see below).
 
 The protected state defends against other local accounts, accidental rollback and ordinary writable-config tampering. A malicious process already running as the same Windows owner could replay a previously copied DPAPI blob; resisting that stronger attacker requires a remote monotonic release service or hardware-backed counter.
 
@@ -135,6 +135,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Invoke
 
 Standalone helpers: `Stop-JarvisProgram.ps1` and `Start-JarvisProgram.ps1`. The optional `Show-JarvisUpdatePrompt.ps1 -CurrentVersion 1.0.0 -NewVersion 1.1.0 -ReleaseNotes "..."` shows a «Обновить / Отмена» dialog and only decides; it never installs anything by itself.
 
+## Program/data split and startup update check
+
+`ultra-server.mjs` roots all user data (conversations, memory, profile, settings, tasks, PoE2 builds) at `DATA_DIR`, which can be moved outside the versioned program directory with the `JARVIS_DATA_DIR` environment variable (`.env` can move via `JARVIS_ENV_FILE`). Without the override the original `ROOT\data` layout is used, so the current install keeps working unchanged. `Start-JarvisProgram.ps1` and `Invoke-JarvisHandoff.ps1` pass a stable `-DataRoot` (default `%LOCALAPPDATA%\JARVIS NEXUS ULTRA\data`) into the process, so an update replacing the program directory never touches user data.
+
+The one-shot orchestrator `Invoke-JarvisUpdate.ps1` runs the whole flow: check the signed index, show the update prompt (unless `-AutoConfirm`), download and verify the manifest and package, then hand off. It is safe to call from the current mixed live install: if the directory is not a marked versioned program directory it returns `UpdateAvailable=false` without doing anything.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Invoke-JarvisUpdate.ps1 -ProgramRoot C:\JARVIS\app-current -IndexUrl https://YOUR.HOST/release-index.json -CurrentVersion 1.0.0
+```
+
+Launchers opt in: `Start-Jarvis-AtLogon.ps1 -UpdateIndexUrl https://YOUR.HOST/release-index.json` checks for updates before starting the core, and `RUN-JARVIS-NEXUS-ULTRA.cmd` checks only when the `JARVIS_INDEX_URL` environment variable is set. Both keep data in `%LOCALAPPDATA%\JARVIS NEXUS ULTRA\data` by default.
+
 ## Validation
 
 ```powershell
@@ -143,13 +155,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-O
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-StagedUpdater.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-ReleaseIndex.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-Handoff.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-UpdateFlow.ps1
 ```
 
-Tests cover signature/key pinning, wrong install IDs, payload/package tampering, replay/downgrade rejection, DPAPI state tampering, stage-only behavior, activation, rollback, ZIP-slip rejection, release-index tampering/expiry/wrong-key, HTTPS/redirect/DNS transport rejection, download size/hash mismatch, and precise process hand-off including safety against stopping unrelated processes.
+Tests cover signature/key pinning, wrong install IDs, payload/package tampering, replay/downgrade rejection, DPAPI state tampering, stage-only behavior, activation, rollback, ZIP-slip rejection, release-index tampering/expiry/wrong-key, HTTPS/redirect/DNS transport rejection, download size/hash mismatch, precise process hand-off including safety against stopping unrelated processes, and the end-to-end update flow including data survival across an update.
 
 ## Next private-channel stage
 
 1. Create the GitHub repository, push `master`, enable GitHub Pages for the chosen folder/branch, publish the first signed release index and point the downloader at `https://<user>.github.io/<repo>/release-index.json`.
-2. Split the live install into a versioned program-only directory and a separate data directory, then wire hand-off into the launcher.
+2. Migrate the live install to a versioned program-only directory (marker + `version.txt`) with data in `%LOCALAPPDATA%\JARVIS NEXUS ULTRA\data`, then set `JARVIS_INDEX_URL` / `-UpdateIndexUrl` to enable automatic updates.
 3. Add remote monotonic release state if same-user malware rollback is in scope.
 4. Installer integration only after the main application is finished.

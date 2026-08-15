@@ -12,6 +12,7 @@ param(
     [Parameter(Mandatory)][string]$PackagePath,
     [Parameter(Mandatory)][string]$CurrentVersion,
     [string]$StateRoot = (Join-Path $env:LOCALAPPDATA 'JARVIS NEXUS ULTRA\update-state'),
+    [string]$DataRoot = (Join-Path $env:LOCALAPPDATA 'JARVIS NEXUS ULTRA\data'),
     [int]$Port = 3791,
     [string]$PublicKeyPath = (Join-Path $PSScriptRoot 'public-key.xml'),
     [string]$PinnedPublicKeyFingerprint = '',
@@ -35,7 +36,7 @@ try {
         -InstallRoot $installFull -CurrentVersion $CurrentVersion -StateRoot $StateRoot -Activate `
         -PublicKeyPath $PublicKeyPath -PinnedPublicKeyFingerprint $PinnedPublicKeyFingerprint
 
-    $start = & (Join-Path $PSScriptRoot 'Start-JarvisProgram.ps1') -ProgramRoot $installFull -Port $Port -HealthTimeoutSeconds $HealthTimeoutSeconds
+    $start = & (Join-Path $PSScriptRoot 'Start-JarvisProgram.ps1') -ProgramRoot $installFull -Port $Port -DataRoot $DataRoot -HealthTimeoutSeconds $HealthTimeoutSeconds
 
     [pscustomobject]@{
         Ok = $update.Ok
@@ -54,7 +55,7 @@ try {
         # back in place (either never replaced or restored by the updater's
         # rollback). Best-effort restart of the previous program.
         try {
-            & (Join-Path $PSScriptRoot 'Start-JarvisProgram.ps1') -ProgramRoot $installFull -Port $Port -HealthTimeoutSeconds $HealthTimeoutSeconds | Out-Null
+            & (Join-Path $PSScriptRoot 'Start-JarvisProgram.ps1') -ProgramRoot $installFull -Port $Port -DataRoot $DataRoot -HealthTimeoutSeconds $HealthTimeoutSeconds | Out-Null
         } catch {
             Write-Warning "Hand-off failed and restart of the previous program also failed: $($_.Exception.Message)"
         }

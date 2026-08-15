@@ -9,6 +9,7 @@ param(
     [Parameter(Mandatory)][string]$ProgramRoot,
     [int]$Port = 3791,
     [string]$NodePath = '',
+    [string]$DataRoot = (Join-Path $env:LOCALAPPDATA 'JARVIS NEXUS ULTRA\data'),
     [int]$HealthTimeoutSeconds = 60
 )
 
@@ -20,6 +21,8 @@ $installFull = [IO.Path]::GetFullPath($ProgramRoot).TrimEnd('\')
 $serverPath = Join-Path $installFull 'ultra-server.mjs'
 if (-not (Test-Path -LiteralPath $serverPath -PathType Leaf)) { throw "JARVIS core is missing: $serverPath" }
 Test-JarvisProgramMarker -Directory $installFull
+$dataFull = [IO.Path]::GetFullPath($DataRoot)
+New-Item -ItemType Directory -Path $dataFull -Force | Out-Null
 
 if ([string]::IsNullOrWhiteSpace($NodePath)) {
     $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -52,16 +55,25 @@ function Test-Health {
     }
 }
 
-# The real ultra-server.mjs reads the port from JARVIS_ULTRA_PORT; mirror that
-# so the started core listens on the port the caller selected.
+# The real ultra-server.mjs reads the port and the data location from the
+# environment; mirror that so the started core listens on the selected port and
+# keeps user data in the stable -DataRoot (never inside the versioned program dir).
 $previousPortEnv = $env:JARVIS_ULTRA_PORT
+$previousDataDir = $env:JARVIS_DATA_DIR
+$previousEnvFile = $env:JARVIS_ENV_FILE
 $env:JARVIS_ULTRA_PORT = [string]$Port
+$env:JARVIS_DATA_DIR = $dataFull
+$envFileCandidates = @((Join-Path $dataFull '.env'), (Join-Path $installFull '.env'))
+$envFile = $envFileCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+if ($null -ne $envFile) { $env:JARVIS_ENV_FILE = $envFile } else { $env:JARVIS_ENV_FILE = $null }
 $process = $null
 try {
     $process = Start-Process -FilePath $NodePath -ArgumentList ('"{0}"' -f $serverPath) `
         -WorkingDirectory $installFull -WindowStyle Hidden -PassThru
 } finally {
     $env:JARVIS_ULTRA_PORT = $previousPortEnv
+    $env:JARVIS_DATA_DIR = $previousDataDir
+    $env:JARVIS_ENV_FILE = $previousEnvFile
 }
 if ($null -eq $process) { throw 'Start-Process returned no process handle; the JARVIS core could not be started.' }
 $startedPid = [int]$process.Id
