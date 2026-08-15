@@ -1,6 +1,6 @@
 # JARVIS NEXUS private licence and update channel
 
-This stage provides owner-only signing, strict offline verification, protected anti-replay state, safe ZIP staging, explicit activation and rollback. It does not yet download or publish updates.
+This stage provides owner-only signing, strict offline verification, protected anti-replay state, safe ZIP staging, explicit activation and rollback, a signed HTTPS release index with a verified downloader, and an opt-in process hand-off with a minimal updater UI. It does not yet publish anything automatically and is not wired into the live launcher.
 
 ## Trust model
 
@@ -33,6 +33,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\New-Ja
 
 Issuer output files are never overwritten. Keep signed licences, manifests and release packages outside the source tree.
 
+Issue a signed release index (list of published releases):
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\New-JarvisReleaseIndex.ps1 -OutputPath .\release-index.json -ReleasesJsonPath .\releases.json -ValidDays 7
+```
+
+`releases.json` is an array (or `{"releases":[...]}`) of entries with `version`, `releaseId`, `envelopeUrl`, `packageUrl` (both absolute HTTPS), `packageBytes`, `packageSha256`, `envelopeSha256` and `publishedAtUtc`. The index is signed like any other envelope and is never overwritten.
+
 ## Staged updater
 
 Update ZIP files must contain only a `payload/` tree, and that tree must include the program directory marker file `.jarvis-program-marker` at its `payload/` root. The updater rejects path traversal, unsafe Windows names, duplicate paths, reparse-point roots, excessive file counts, expanded-size limits and suspicious compression ratios.
@@ -61,19 +69,43 @@ The activation target must be a program-only/versioned directory. Do not point i
 
 The protected state defends against other local accounts, accidental rollback and ordinary writable-config tampering. A malicious process already running as the same Windows owner could replay a previously copied DPAPI blob; resisting that stronger attacker requires a remote monotonic release service or hardware-backed counter.
 
+## Release index and downloader
+
+The owner signs a release index that lists every published release (version, releaseId, HTTPS URLs to the update manifest and the ZIP package, exact byte size and SHA-256). Clients never trust the transport: they download the index, verify its signature against the pinned key, check expiry and channel, pick the newest version newer than the current one, then download the manifest and package.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Import-Module .\private-channel\Jarvis.ReleaseIndex.psm1 -Force; $r = Get-JarvisReleaseIndex -IndexUrl https://YOUR.HOST/release-index.json -IndexPath .\release-index.json -CurrentVersion 1.0.0; Get-JarvisReleasePackage -Release $r -OutputDirectory .\download"
+```
+
+Feed the returned `EnvelopePath`/`PackagePath` to `Invoke-JarvisStagedUpdate.ps1`.
+
+Transport rules: HTTPS only (loopback HTTP is allowed only via an explicit test-only switch), no credentials in URLs, manual redirect handling that re-checks scheme and host on every hop, DNS resolution must not point to loopback/link-local/private/multicast addresses, bounded streaming with enforced size caps, and downloaded bytes must match the signed SHA-256 exactly before they are written into place.
+
+## Opt-in process hand-off and updater UI
+
+Hand-off stops the running JARVIS program, activates a verified update and restarts it. It is opt-in and never wired into the live launcher. The JARVIS core is identified as the process that owns the TCP listener on the port and whose command line references `<ProgramRoot>\ultra-server.mjs`; Pet/Sense are stopped only when their path is under the same program root. Nothing is ever killed by image name (`taskkill /IM node.exe` is forbidden), and an unattributable port owner causes a refusal.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Invoke-JarvisHandoff.ps1 -ProgramRoot C:\JARVIS\app-current -EnvelopePath C:\release\update.json -PackagePath C:\release\jarvis-1.1.0.zip -CurrentVersion 1.0.0
+```
+
+Standalone helpers: `Stop-JarvisProgram.ps1` and `Start-JarvisProgram.ps1`. The optional `Show-JarvisUpdatePrompt.ps1 -CurrentVersion 1.0.0 -NewVersion 1.1.0 -ReleaseNotes "..."` shows a «Обновить / Отмена» dialog and only decides; it never installs anything by itself.
+
 ## Validation
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-PrivateChannel.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-OwnerIssuer.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-StagedUpdater.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-ReleaseIndex.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\Test-Handoff.ps1
 ```
 
-Tests cover signature/key pinning, wrong install IDs, payload/package tampering, replay/downgrade rejection, DPAPI state tampering, stage-only behavior, activation, rollback and ZIP-slip rejection.
+Tests cover signature/key pinning, wrong install IDs, payload/package tampering, replay/downgrade rejection, DPAPI state tampering, stage-only behavior, activation, rollback, ZIP-slip rejection, release-index tampering/expiry/wrong-key, HTTPS/redirect/DNS transport rejection, download size/hash mismatch, and precise process hand-off including safety against stopping unrelated processes.
 
 ## Next private-channel stage
 
-1. Choose the private HTTPS host/domain and authentication method, then add the signed release index and downloader.
-2. Integrate process hand-off with a versioned program-only directory and updater UI.
+1. Choose the private HTTPS host/domain, publish the signed release index there and point the downloader at it.
+2. Split the live install into a versioned program-only directory and a separate data directory, then wire hand-off into the launcher.
 3. Add remote monotonic release state if same-user malware rollback is in scope.
 4. Installer integration only after the main application is finished.

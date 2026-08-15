@@ -18,11 +18,21 @@ Add-Type -AssemblyName System.Security -ErrorAction Stop
 
 function Assert-NoExistingReparsePoint {
     param([Parameter(Mandatory)][string]$Path)
+    $redirectedRoots = @(
+        [Environment]::GetFolderPath('LocalApplicationData'),
+        [Environment]::GetFolderPath('ApplicationData'),
+        [Environment]::GetFolderPath('UserProfile'),
+        (Split-Path -Parent ([Environment]::GetFolderPath('UserProfile'))),
+        ([Environment]::SystemDirectory | Split-Path -Parent)
+    ) | ForEach-Object { if ($_) { [IO.Path]::GetFullPath($_).TrimEnd('\') } } | Where-Object { $_ } | Select-Object -Unique
     $current = [IO.Path]::GetFullPath($Path)
     while (-not [string]::IsNullOrWhiteSpace($current)) {
         if (Test-Path -LiteralPath $current) {
             $item = Get-Item -LiteralPath $current -Force
-            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Reparse points are forbidden in release-package paths: $current" }
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                if ($redirectedRoots -contains $current) { break }
+                throw "Reparse points are forbidden in release-package paths: $current"
+            }
         }
         $parent = Split-Path -Parent $current
         if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $current) { break }
@@ -59,6 +69,7 @@ $privateBytes = $null
 $payloadBytes = $null
 $rsa = $null
 $packageStream = $null
+$tempPath = $null
 try {
     $metadata = Get-Content -LiteralPath $metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $protectedBytes = [IO.File]::ReadAllBytes($privatePath)
@@ -120,6 +131,7 @@ try {
     $tempPath = $OutputPath + '.tmp-' + [Guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText($tempPath, $envelope, [Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $tempPath -Destination $OutputPath
+    $tempPath = $null
     [pscustomobject]@{
         Ok = $true; Kind = $Kind; OutputPath = [IO.Path]::GetFullPath($OutputPath)
         KeyFingerprint = $publicFingerprint
@@ -132,5 +144,6 @@ try {
     }
     if ($null -ne $packageStream) { $packageStream.Dispose() }
     if ($null -ne $rsa) { $rsa.Dispose() }
+    if ($null -ne $tempPath -and (Test-Path -LiteralPath $tempPath)) { Remove-Item -LiteralPath $tempPath -Force }
     [Array]::Clear($entropy, 0, $entropy.Length)
 }

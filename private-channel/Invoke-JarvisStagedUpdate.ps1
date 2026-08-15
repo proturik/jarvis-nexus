@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory)][string]$InstallRoot,
     [Parameter(Mandatory)][string]$CurrentVersion,
     [string]$StateRoot = (Join-Path $env:LOCALAPPDATA 'JARVIS NEXUS ULTRA\update-state'),
+    [string]$PublicKeyPath = (Join-Path $PSScriptRoot 'public-key.xml'),
+    [string]$PinnedPublicKeyFingerprint = '',
     [ValidateRange(1, 8192)][int]$MaxFiles = 4096,
     [ValidateRange(1048576, 4294967296)][long]$MaxExpandedBytes = 1073741824,
     [switch]$Activate
@@ -18,13 +20,23 @@ Import-Module (Join-Path $PSScriptRoot 'Jarvis.UpdateState.psm1') -Force
 
 function Assert-SafeExistingPath {
     param([Parameter(Mandatory)][string]$Path, [switch]$AllowMissingLeaf)
+    $redirectedRoots = @(
+        [Environment]::GetFolderPath('LocalApplicationData'),
+        [Environment]::GetFolderPath('ApplicationData'),
+        [Environment]::GetFolderPath('UserProfile'),
+        (Split-Path -Parent ([Environment]::GetFolderPath('UserProfile'))),
+        ([Environment]::SystemDirectory | Split-Path -Parent)
+    ) | ForEach-Object { if ($_) { [IO.Path]::GetFullPath($_).TrimEnd('\') } } | Where-Object { $_ } | Select-Object -Unique
     $full = [IO.Path]::GetFullPath($Path)
     $current = $full
     $first = $true
     while (-not [string]::IsNullOrWhiteSpace($current)) {
         if (Test-Path -LiteralPath $current) {
             $item = Get-Item -LiteralPath $current -Force
-            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Reparse point is forbidden: $current" }
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                if ($redirectedRoots -contains $current) { break }
+                throw "Reparse point is forbidden: $current"
+            }
         } elseif (-not ($AllowMissingLeaf -and $first)) { throw "Required path is missing: $current" }
         $first = $false
         $parent = Split-Path -Parent $current
@@ -74,14 +86,23 @@ function Expand-SafePayload {
             if ($isDirectory) { New-Item -ItemType Directory -Path $destination -Force | Out-Null; continue }
             $count++
             if ($count -gt $MaxFiles) { throw 'ZIP contains too many files.' }
-            $total += $entry.Length
-            if ($entry.Length -lt 0 -or $total -gt $MaxExpandedBytes) { throw 'ZIP expanded size exceeds the configured limit.' }
-            if ($entry.CompressedLength -gt 0 -and $entry.Length -gt 10485760 -and ($entry.Length / $entry.CompressedLength) -gt 200) { throw 'ZIP compression ratio is unsafe.' }
+            if ($entry.Length -lt 0) { throw 'ZIP entry has an invalid declared size.' }
             $parent = Split-Path -Parent $destination
             New-Item -ItemType Directory -Path $parent -Force | Out-Null
             $input = $entry.Open()
             $output = New-Object IO.FileStream($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-            try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
+            try {
+                $buffer = New-Object byte[] 262144
+                [long]$entryWritten = 0
+                while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $entryWritten += $read
+                    $total += $read
+                    if ($total -gt $MaxExpandedBytes) { throw 'ZIP expanded size exceeds the configured limit.' }
+                    $output.Write($buffer, 0, $read)
+                }
+                if ($entryWritten -ne $entry.Length) { throw 'ZIP entry size does not match its declared length.' }
+                if ($entry.CompressedLength -gt 0 -and $entryWritten -gt 10485760 -and ($entryWritten / $entry.CompressedLength) -gt 200) { throw 'ZIP compression ratio is unsafe.' }
+            } finally { $output.Dispose(); $input.Dispose() }
         }
     } finally { $archive.Dispose() }
     if ($count -eq 0) { throw 'ZIP payload is empty.' }
@@ -106,7 +127,9 @@ try {
     if ($Activate) { Test-JarvisProgramMarker -Directory $installFull }
     $state = Read-JarvisUpdateState -StateRoot $StateRoot
     $trustedFloor = if ([version]$state.HighestAcceptedVersion -gt [version]$CurrentVersion) { $state.HighestAcceptedVersion } else { $CurrentVersion }
-    $verified = Test-JarvisSignedEnvelope -ExpectedKind update -EnvelopePath $EnvelopePath -PackagePath $PackagePath -CurrentVersion $trustedFloor
+    $envelopeArgs = @{ ExpectedKind = 'update'; EnvelopePath = $EnvelopePath; PackagePath = $PackagePath; CurrentVersion = $trustedFloor; PublicKeyPath = $PublicKeyPath }
+    if (-not [string]::IsNullOrWhiteSpace($PinnedPublicKeyFingerprint)) { $envelopeArgs.PinnedPublicKeyFingerprint = $PinnedPublicKeyFingerprint }
+    $verified = Test-JarvisSignedEnvelope @envelopeArgs
     Test-JarvisUpdateCandidate -StateRoot $StateRoot -CandidateVersion $verified.Version -ReleaseId $verified.ReleaseId -CurrentVersion $CurrentVersion | Out-Null
 
     $packageStream = New-Object IO.FileStream([IO.Path]::GetFullPath($PackagePath), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
@@ -135,19 +158,28 @@ try {
     $oldMoved = $true
     Move-Item -LiteralPath $expanded.PayloadRoot -Destination $installFull
     $newMoved = $true
-    Update-JarvisUpdateState -StateRoot $StateRoot -Version $verified.Version -ReleaseId $verified.ReleaseId -CurrentVersion $CurrentVersion | Out-Null
+    Update-JarvisUpdateState -StateRoot $StateRoot -Version $verified.Version -ReleaseId $verified.ReleaseId -CurrentVersion $CurrentVersion -Lock $lock | Out-Null
     return [pscustomobject]@{ Ok=$true; Activated=$true; Version=$verified.Version; ReleaseId=$verified.ReleaseId; StagePath=$null; BackupPath=$backupRoot }
 } catch {
-    if ($oldMoved -and -not $newMoved -and -not (Test-Path -LiteralPath $installFull) -and (Test-Path -LiteralPath $backupRoot)) {
-        Move-Item -LiteralPath $backupRoot -Destination $installFull
-    } elseif ($oldMoved -and $newMoved -and (Test-Path -LiteralPath $backupRoot)) {
-        $failedRoot = Join-Path $installParent ('.jarvis-failed-' + [Guid]::NewGuid().ToString('N'))
-        if (Test-Path -LiteralPath $installFull) { Move-Item -LiteralPath $installFull -Destination $failedRoot }
-        Move-Item -LiteralPath $backupRoot -Destination $installFull
+    $originalError = $_
+    $rollbackError = $null
+    try {
+        if ($oldMoved -and -not $newMoved -and -not (Test-Path -LiteralPath $installFull) -and (Test-Path -LiteralPath $backupRoot)) {
+            Move-Item -LiteralPath $backupRoot -Destination $installFull
+        } elseif ($oldMoved -and $newMoved -and (Test-Path -LiteralPath $backupRoot)) {
+            $failedRoot = Join-Path $installParent ('.jarvis-failed-' + [Guid]::NewGuid().ToString('N'))
+            if (Test-Path -LiteralPath $installFull) { Move-Item -LiteralPath $installFull -Destination $failedRoot }
+            Move-Item -LiteralPath $backupRoot -Destination $installFull
+        }
+    } catch {
+        $rollbackError = $_
     }
-    throw
+    if ($null -ne $rollbackError) {
+        throw "Update failed and rollback also failed: $($originalError.Exception.Message) | rollback: $($rollbackError.Exception.Message)"
+    }
+    throw $originalError
 } finally {
-    if ($null -ne $packageStream) { $packageStream.Dispose() }
-    if ($null -ne $lock) { $lock.Dispose() }
-    if (-not $keepStage -and (Test-Path -LiteralPath $stageRoot)) { Remove-Item -LiteralPath $stageRoot -Recurse -Force }
+    if ($null -ne $packageStream) { try { $packageStream.Dispose() } catch { } }
+    if ($null -ne $lock) { try { $lock.Dispose() } catch { } }
+    if (-not $keepStage -and (Test-Path -LiteralPath $stageRoot)) { try { Remove-Item -LiteralPath $stageRoot -Recurse -Force } catch { } }
 }

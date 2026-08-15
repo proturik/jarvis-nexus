@@ -10,11 +10,19 @@ $script:ProgramMarkerContent = 'JARVIS NEXUS ULTRA program directory v1'
 
 function Assert-NoReparseInPath {
     param([Parameter(Mandatory)][string]$Path)
+    $redirectedRoots = @(
+        [Environment]::GetFolderPath('LocalApplicationData'),
+        [Environment]::GetFolderPath('ApplicationData'),
+        [Environment]::GetFolderPath('UserProfile'),
+        (Split-Path -Parent ([Environment]::GetFolderPath('UserProfile'))),
+        ([Environment]::SystemDirectory | Split-Path -Parent)
+    ) | ForEach-Object { if ($_) { [IO.Path]::GetFullPath($_).TrimEnd('\') } } | Where-Object { $_ } | Select-Object -Unique
     $current = [IO.Path]::GetFullPath($Path)
     while (-not [string]::IsNullOrWhiteSpace($current)) {
         if (Test-Path -LiteralPath $current) {
             $item = Get-Item -LiteralPath $current -Force
             if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                if ($redirectedRoots -contains $current) { break }
                 throw "Reparse points are forbidden in update-state paths: $current"
             }
         }
@@ -63,8 +71,8 @@ function Set-JarvisRestrictedAcl {
     param([Parameter(Mandatory)][string]$Path)
     $fullPath = [IO.Path]::GetFullPath($Path)
     Assert-NoReparseInPath -Path $fullPath
-    $owner = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    & icacls.exe $fullPath /inheritance:r /grant:r "${owner}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' | Out-Null
+    $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    & icacls.exe $fullPath /inheritance:r /grant:r "*${ownerSid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to restrict directory ACL (icacls exit $LASTEXITCODE)." }
     return $fullPath
 }
@@ -171,6 +179,7 @@ function Lock-JarvisUpdateState {
     param([Parameter(Mandatory)][string]$StateRoot)
     $fullRoot = Initialize-StateRoot -StateRoot $StateRoot
     $lockPath = Join-Path $fullRoot $script:LockFileName
+    Assert-NoReparseInPath -Path $lockPath
     try {
         return New-Object IO.FileStream($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     } catch { throw 'Another JARVIS update operation is already running.' }
@@ -208,37 +217,44 @@ function Update-JarvisUpdateState {
         [Parameter(Mandatory)][string]$Version,
         [Parameter(Mandatory)][string]$ReleaseId,
         [Parameter(Mandatory)][string]$CurrentVersion,
-        [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow
+        [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow,
+        [IO.FileStream]$Lock
     )
-    $candidate = Test-JarvisUpdateCandidate -StateRoot $StateRoot -CandidateVersion $Version -ReleaseId $ReleaseId `
-        -CurrentVersion $CurrentVersion -NowUtc $NowUtc
-    $ids = @($candidate.State.AcceptedReleaseIds) + @($ReleaseId)
-    if ($ids.Count -gt 32) { $ids = @($ids | Select-Object -Last 32) }
-    $trustedUtc = if ($candidate.State.TrustedUtc -gt $NowUtc) { $candidate.State.TrustedUtc } else { $NowUtc }
-    $payload = [ordered]@{
-        schemaVersion = 1
-        highestAcceptedVersion = $Version
-        acceptedReleaseIds = $ids
-        trustedUtc = $trustedUtc.ToUniversalTime().ToString('o')
-    } | ConvertTo-Json -Compress
-    $plainBytes = [Text.Encoding]::UTF8.GetBytes($payload)
-    $protectedBytes = $null
-    $tempPath = $null
+    $ownLock = $null
     try {
-        $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
-            $plainBytes, $script:Entropy, [Security.Cryptography.DataProtectionScope]::CurrentUser
-        )
-        $fullRoot = Initialize-StateRoot -StateRoot $StateRoot
-        $statePath = Join-Path $fullRoot $script:StateFileName
-        $tempPath = $statePath + '.tmp-' + [Guid]::NewGuid().ToString('N')
-        [IO.File]::WriteAllBytes($tempPath, $protectedBytes)
-        ConvertFrom-ProtectedStateFile -Path $tempPath | Out-Null
-        Move-Item -LiteralPath $tempPath -Destination $statePath -Force
+        if ($null -eq $Lock) { $ownLock = Lock-JarvisUpdateState -StateRoot $StateRoot }
+        $candidate = Test-JarvisUpdateCandidate -StateRoot $StateRoot -CandidateVersion $Version -ReleaseId $ReleaseId `
+            -CurrentVersion $CurrentVersion -NowUtc $NowUtc
+        $ids = @($candidate.State.AcceptedReleaseIds) + @($ReleaseId)
+        if ($ids.Count -gt 32) { $ids = @($ids | Select-Object -Last 32) }
+        $trustedUtc = if ($candidate.State.TrustedUtc -gt $NowUtc) { $candidate.State.TrustedUtc } else { $NowUtc }
+        $payload = [ordered]@{
+            schemaVersion = 1
+            highestAcceptedVersion = $Version
+            acceptedReleaseIds = $ids
+            trustedUtc = $trustedUtc.ToUniversalTime().ToString('o')
+        } | ConvertTo-Json -Compress
+        $plainBytes = [Text.Encoding]::UTF8.GetBytes($payload)
+        $protectedBytes = $null
         $tempPath = $null
+        try {
+            $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
+                $plainBytes, $script:Entropy, [Security.Cryptography.DataProtectionScope]::CurrentUser
+            )
+            $fullRoot = Initialize-StateRoot -StateRoot $StateRoot
+            $statePath = Join-Path $fullRoot $script:StateFileName
+            $tempPath = $statePath + '.tmp-' + [Guid]::NewGuid().ToString('N')
+            [IO.File]::WriteAllBytes($tempPath, $protectedBytes)
+            ConvertFrom-ProtectedStateFile -Path $tempPath | Out-Null
+            Move-Item -LiteralPath $tempPath -Destination $statePath -Force
+            $tempPath = $null
+        } finally {
+            [Array]::Clear($plainBytes, 0, $plainBytes.Length)
+            if ($null -ne $protectedBytes) { [Array]::Clear($protectedBytes, 0, $protectedBytes.Length) }
+            if ($null -ne $tempPath -and (Test-Path -LiteralPath $tempPath)) { Remove-Item -LiteralPath $tempPath -Force }
+        }
     } finally {
-        [Array]::Clear($plainBytes, 0, $plainBytes.Length)
-        if ($null -ne $protectedBytes) { [Array]::Clear($protectedBytes, 0, $protectedBytes.Length) }
-        if ($null -ne $tempPath -and (Test-Path -LiteralPath $tempPath)) { Remove-Item -LiteralPath $tempPath -Force }
+        if ($null -ne $ownLock) { $ownLock.Dispose() }
     }
 }
 

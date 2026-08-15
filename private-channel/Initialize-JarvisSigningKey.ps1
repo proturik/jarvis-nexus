@@ -12,11 +12,19 @@ if ([string]::IsNullOrWhiteSpace($PublicKeyOut)) { $PublicKeyOut = Join-Path $PS
 
 function Assert-NoExistingReparsePoint {
     param([Parameter(Mandatory)][string]$Path)
+    $redirectedRoots = @(
+        [Environment]::GetFolderPath('LocalApplicationData'),
+        [Environment]::GetFolderPath('ApplicationData'),
+        [Environment]::GetFolderPath('UserProfile'),
+        (Split-Path -Parent ([Environment]::GetFolderPath('UserProfile'))),
+        ([Environment]::SystemDirectory | Split-Path -Parent)
+    ) | ForEach-Object { if ($_) { [IO.Path]::GetFullPath($_).TrimEnd('\') } } | Where-Object { $_ } | Select-Object -Unique
     $current = [IO.Path]::GetFullPath($Path)
     while (-not [string]::IsNullOrWhiteSpace($current)) {
         if (Test-Path -LiteralPath $current) {
             $item = Get-Item -LiteralPath $current -Force
             if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                if ($redirectedRoots -contains $current) { break }
                 throw "Reparse points are forbidden in signing-key paths: $current"
             }
         }
@@ -49,8 +57,8 @@ $privateBytes = $null
 $protectedBytes = $null
 try {
     New-Item -ItemType Directory -Path $KeyRoot -Force | Out-Null
-    $owner = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    & icacls.exe $KeyRoot /inheritance:r /grant:r "${owner}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' | Out-Null
+    $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    & icacls.exe $KeyRoot /inheritance:r /grant:r "*${ownerSid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to restrict signing-key directory ACL (icacls exit $LASTEXITCODE)." }
 
     if (Test-Path -LiteralPath $privatePath -PathType Leaf) {

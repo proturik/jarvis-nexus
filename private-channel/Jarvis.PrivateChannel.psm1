@@ -55,10 +55,29 @@ function ConvertTo-RequiredUtcTime {
     return $parsed.ToUniversalTime()
 }
 
+function Test-IntegralValue {
+    param($Value)
+    if ($null -eq $Value) { return $false }
+    $type = $Value.GetType()
+    return $type -eq [byte] -or $type -eq [sbyte] -or $type -eq [int16] -or $type -eq [uint16] -or `
+        $type -eq [int] -or $type -eq [uint] -or $type -eq [int64] -or $type -eq [uint64]
+}
+
+function Test-ReleaseIndexUrl {
+    param([Parameter(Mandatory)][string]$Url, [string]$Field = 'URL', [switch]$AllowLoopbackHttp)
+    if ($Url.Length -gt 2048) { throw "Release index $Field is too long." }
+    $uri = $null
+    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri)) { throw "Release index $Field is not an absolute URL." }
+    if (-not [string]::IsNullOrEmpty($uri.UserInfo)) { throw "Release index $Field must not contain credentials." }
+    if ($uri.Scheme -eq 'https') { return }
+    if ($uri.Scheme -eq 'http' -and $AllowLoopbackHttp -and $uri.Host -eq '127.0.0.1') { return }
+    throw "Release index $Field must use HTTPS."
+}
+
 function Test-JarvisSignedEnvelopeCore {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][ValidateSet('license', 'update')][string]$ExpectedKind,
+        [Parameter(Mandatory)][ValidateSet('license', 'update', 'index')][string]$ExpectedKind,
         [Parameter(Mandatory)][string]$EnvelopePath,
         [Parameter(Mandatory)][string]$PublicKeyPath,
         [Parameter(Mandatory)][ValidatePattern('^[0-9A-Fa-f]{64}$')][string]$PinnedPublicKeyFingerprint,
@@ -66,7 +85,8 @@ function Test-JarvisSignedEnvelopeCore {
         [string]$PackagePath,
         [string]$ExpectedChannel = 'private',
         [string]$CurrentVersion,
-        [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow
+        [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow,
+        [switch]$AllowLoopbackHttp
     )
 
     foreach ($path in @($EnvelopePath, $PublicKeyPath)) {
@@ -138,6 +158,49 @@ function Test-JarvisSignedEnvelopeCore {
         }
     }
 
+    if ($kind -eq 'index') {
+        if (($expiresAt - $issuedAt).TotalDays -gt 31) { throw 'Release index validity period is too long.' }
+        if ([string](Get-RequiredProperty $payload 'channel') -ne $ExpectedChannel) { throw 'Release index channel is not authorised.' }
+        $indexVersion = Get-RequiredProperty $payload 'indexVersion'
+        if (-not (Test-IntegralValue $indexVersion)) { throw 'Release index version must be an integer.' }
+        if ([long]$indexVersion -ne 1) { throw 'Release index version must be exactly 1.' }
+        $releases = @((Get-RequiredProperty $payload 'releases'))
+        if ($releases.Count -lt 1 -or $releases.Count -gt 64) { throw 'Release index must contain between 1 and 64 releases.' }
+        $seenReleaseIds = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        $seenVersions = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        $parsedReleases = @()
+        foreach ($entry in $releases) {
+            $version = [string](Get-RequiredProperty $entry 'version')
+            if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Release index entry version is invalid.' }
+            $releaseId = [string](Get-RequiredProperty $entry 'releaseId')
+            if ($releaseId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$') { throw 'Release index entry releaseId is invalid.' }
+            $envelopeUrl = [string](Get-RequiredProperty $entry 'envelopeUrl')
+            $packageUrl = [string](Get-RequiredProperty $entry 'packageUrl')
+            Test-ReleaseIndexUrl -Url $envelopeUrl -Field 'envelopeUrl' -AllowLoopbackHttp:$AllowLoopbackHttp
+            Test-ReleaseIndexUrl -Url $packageUrl -Field 'packageUrl' -AllowLoopbackHttp:$AllowLoopbackHttp
+            $packageBytesValue = Get-RequiredProperty $entry 'packageBytes'
+            if (-not (Test-IntegralValue $packageBytesValue)) { throw 'Release index entry packageBytes is invalid.' }
+            $packageBytes = [long]$packageBytesValue
+            if ($packageBytes -le 0 -or $packageBytes -gt 4294967296) { throw 'Release index entry packageBytes must be between 1 byte and 4 GiB.' }
+            $packageSha256 = ([string](Get-RequiredProperty $entry 'packageSha256')).ToUpperInvariant()
+            $envelopeSha256 = ([string](Get-RequiredProperty $entry 'envelopeSha256')).ToUpperInvariant()
+            if ($packageSha256 -notmatch '^[0-9A-F]{64}$') { throw 'Release index entry packageSha256 is invalid.' }
+            if ($envelopeSha256 -notmatch '^[0-9A-F]{64}$') { throw 'Release index entry envelopeSha256 is invalid.' }
+            $publishedAtUtc = ConvertTo-RequiredUtcTime (Get-RequiredProperty $entry 'publishedAtUtc') 'publishedAtUtc'
+            if (-not $seenReleaseIds.Add($releaseId)) { throw "Release index contains a duplicate releaseId: $releaseId" }
+            if (-not $seenVersions.Add($version)) { throw "Release index contains a duplicate version: $version" }
+            $parsedReleases += [pscustomobject]@{
+                Version = $version; ReleaseId = $releaseId; EnvelopeUrl = $envelopeUrl; PackageUrl = $packageUrl
+                PackageBytes = $packageBytes; PackageSha256 = $packageSha256; EnvelopeSha256 = $envelopeSha256
+                PublishedAtUtc = $publishedAtUtc
+            }
+        }
+        return [pscustomobject]@{
+            Ok = $true; Kind = 'index'; Channel = [string](Get-RequiredProperty $payload 'channel')
+            KeyFingerprint = $actualFingerprint; ExpiresAt = $expiresAt; Releases = $parsedReleases
+        }
+    }
+
     if (($expiresAt - $issuedAt).TotalDays -gt 31) { throw 'Update manifest validity period is too long.' }
     if ([string](Get-RequiredProperty $payload 'channel') -ne $ExpectedChannel) { throw 'Update channel is not authorised.' }
     $version = [string](Get-RequiredProperty $payload 'version')
@@ -172,17 +235,33 @@ function Test-JarvisSignedEnvelopeCore {
 function Test-JarvisSignedEnvelope {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][ValidateSet('license', 'update')][string]$ExpectedKind,
+        [Parameter(Mandatory)][ValidateSet('license', 'update', 'index')][string]$ExpectedKind,
         [Parameter(Mandatory)][string]$EnvelopePath,
         [string]$PublicKeyPath = (Join-Path $PSScriptRoot 'public-key.xml'),
+        [string]$PinnedPublicKeyFingerprint = $script:ProductionPublicKeyFingerprint,
         [string]$InstallId,
         [string]$PackagePath,
         [string]$ExpectedChannel = 'private',
-        [string]$CurrentVersion
+        [string]$CurrentVersion,
+        [switch]$AllowLoopbackHttp
     )
     Test-JarvisSignedEnvelopeCore -ExpectedKind $ExpectedKind -EnvelopePath $EnvelopePath -PublicKeyPath $PublicKeyPath `
-        -PinnedPublicKeyFingerprint $script:ProductionPublicKeyFingerprint -InstallId $InstallId -PackagePath $PackagePath `
-        -ExpectedChannel $ExpectedChannel -CurrentVersion $CurrentVersion
+        -PinnedPublicKeyFingerprint $PinnedPublicKeyFingerprint -InstallId $InstallId -PackagePath $PackagePath `
+        -ExpectedChannel $ExpectedChannel -CurrentVersion $CurrentVersion -AllowLoopbackHttp:$AllowLoopbackHttp
 }
 
-Export-ModuleMember -Function Test-JarvisSignedEnvelope
+function Test-JarvisReleaseIndex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$IndexPath,
+        [string]$PublicKeyPath = (Join-Path $PSScriptRoot 'public-key.xml'),
+        [string]$PinnedPublicKeyFingerprint = $script:ProductionPublicKeyFingerprint,
+        [string]$ExpectedChannel = 'private',
+        [switch]$AllowLoopbackHttp
+    )
+    Test-JarvisSignedEnvelopeCore -ExpectedKind 'index' -EnvelopePath $IndexPath -PublicKeyPath $PublicKeyPath `
+        -PinnedPublicKeyFingerprint $PinnedPublicKeyFingerprint -ExpectedChannel $ExpectedChannel `
+        -AllowLoopbackHttp:$AllowLoopbackHttp
+}
+
+Export-ModuleMember -Function Test-JarvisSignedEnvelope, Test-JarvisReleaseIndex
