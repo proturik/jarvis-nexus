@@ -8,6 +8,9 @@ import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { contextualUserMessage, passiveHotFollowup, redactSensitiveText, sanitizeAmbientContext } from './conversation-intelligence.mjs';
 import { Poe2BuildCoach, buildCoachContext, buildPoe2CoachVisionPrompt, fetchPoe2BuildSource, groundedPoe2Pointer, inferPoe2Patch, looksLikePoe2BuildUrl, poe2CoachIntent, sanitisePoe2Build } from './poe2-build-coach.mjs';
+import * as jarvisTools from './jarvis-tools.mjs';
+import { loadGraph, saveGraph, merge as mergeGraph, extractFallback, extractWithLlm, retrieve as retrieveGraph, renderGraphJson } from './knowledge-graph.mjs';
+import { McpClient, loadMcpConfig, listAllTools } from './mcp-client.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.join(ROOT, 'public-ultra');
@@ -27,6 +30,10 @@ const LOCAL_VISION_URL = 'http://127.0.0.1:3793/vision';
 const CONTROL_SCRIPT = path.join(ROOT, 'windows-control', 'Invoke-NexusControl.ps1');
 const APP_DISCOVERY_SCRIPT = path.join(ROOT, 'windows-control', 'Find-NexusApp.ps1');
 const THEME_SCRIPT = path.join(ROOT, 'windows-theme', 'Sync-Nexus-Theme.ps1');
+const GRAPH_FILE = path.join(DATA_DIR, 'knowledge-graph.json');
+const MCP_CONFIG_FILE = path.join(DATA_DIR, 'mcp-servers.json');
+const MCP_CONFIG_EXAMPLE = path.join(ROOT, 'mcp-servers.example.json');
+const FILE_READ_ROOTS = [DATA_DIR];
 
 const ENV_FILE = process.env.JARVIS_ENV_FILE ? path.resolve(process.env.JARVIS_ENV_FILE) : path.join(ROOT, '.env');
 await loadDotEnv(ENV_FILE);
@@ -141,6 +148,10 @@ const DEFAULT_KNOWLEDGE = Object.freeze({
   taskMethod: [], toolKnowledge: [], conversationRules: [], plannerExamples: [],
 });
 let knowledgeCore = DEFAULT_KNOWLEDGE;
+let knowledgeGraph = { entities: new Map(), relations: [] };
+let activeGraphContext = '';
+const mcpClients = [];
+let mcpTools = [];
 
 async function loadDotEnv(filename) {
   try {
@@ -245,6 +256,8 @@ async function boot() {
   ]);
   knowledgeCore = sanitiseKnowledge(knowledge);
   await poe2BuildCoach.load();
+  knowledgeGraph = await loadGraph(GRAPH_FILE);
+  try { mcpTools = await startMcpClients(); } catch (error) { await logEvent('mcp_unavailable', `MCP не загрузился: ${error.message}`); }
   state = {
     settings: sanitiseSettings({ ...DEFAULT_SETTINGS, ...settings }),
     profile: sanitiseProfile(profile),
@@ -266,6 +279,76 @@ async function saveConversation(role, text) {
   state.conversations.push({ id: randomUUID(), role, text: redactSensitiveText(text, 1800), at: new Date().toISOString() });
   state.conversations = state.conversations.slice(-240);
   await writeJson(FILES.conversations, state.conversations);
+}
+
+async function startMcpClients() {
+  let config = await loadMcpConfig(MCP_CONFIG_FILE);
+  if (!config.length && process.env.JARVIS_MCP_EXAMPLE === '1') config = await loadMcpConfig(MCP_CONFIG_EXAMPLE);
+  const tools = [];
+  for (const server of config) {
+    const client = new McpClient(server);
+    try {
+      await client.start();
+      const serverTools = await client.listTools();
+      tools.push(...serverTools.map((tool) => ({ ...tool, server: server.name })));
+      mcpClients.push(client);
+    } catch (error) {
+      await logEvent('mcp_unavailable', `MCP ${server.name} не запустился: ${error.message}`);
+      try { await client.stop(); } catch { /* already stopped */ }
+    }
+  }
+  return tools;
+}
+
+async function callMcpTool(name, args) {
+  for (const client of mcpClients) {
+    try {
+      const serverTools = await client.listTools();
+      if (serverTools.some((tool) => tool.name === name)) return await client.callTool(name, args);
+    } catch { /* try next client */ }
+  }
+  throw new Error(`MCP-инструмент «${name}» недоступен.`);
+}
+
+function mcpToolsContext() {
+  if (!mcpTools.length) return '';
+  const lines = mcpTools.slice(0, 40).map((tool) => `- ${tool.name}${tool.server ? ` (${tool.server})` : ''}: ${clean(tool.description, 160)}`).join('\n');
+  return `ДОСТУПНЫЕ MCP-ИНСТРУМЕНТЫ (вызывай через ядро, не выдумывай их результат):\n${lines}`;
+}
+
+async function mergeKnowledgeGraph(text) {
+  if (!text) return;
+  const extracted = await extractWithLlm(text, { chat: null }); // deterministic fallback in the hot path
+  knowledgeGraph = await mergeGraph(knowledgeGraph, extracted);
+  try { await saveGraph(GRAPH_FILE, knowledgeGraph); } catch { /* graph is best-effort */ }
+}
+
+async function buildGraphContext(query) {
+  activeGraphContext = '';
+  if (!knowledgeGraph.entities.size) return '';
+  const facts = await retrieveGraph(knowledgeGraph, clean(query, 300), 8);
+  if (!facts.length) return '';
+  const lines = facts.map((entity) => `- ${entity.name} (${entity.type}): ${(entity.observations || []).slice(0, 3).join(' · ')}`).join('\n');
+  activeGraphContext = `ПАМЯТЬ ПО ТЕМЕ (локальные факты, только если уместны):\n${lines}`;
+  return activeGraphContext;
+}
+
+function knowledgeGraphContext() {
+  return activeGraphContext;
+}
+
+function adaptiveToneHint(message) {
+  const text = clean(message, 1200).toLocaleLowerCase('ru-RU');
+  if (/(?:код|программ|функци|ошибк|bug|api|сервер|файл|\.mjs|\.py|\.ps1|git|npm|json|sql)/iu.test(text)) {
+    return 'Сейчас тема техническая: отвечай предельно точно, без украшательств, называй команды и ошибки как есть.';
+  }
+  if (/(?:бизнес|деньги|продаж|подпис|тариф|клиент|оплат|налог|договор|стратег)/iu.test(text)) {
+    return 'Сейчас тема деловая: отвечай прагматично и по делу, без лишней эмоциональности.';
+  }
+  if (/(?:устал|плохо|грустно|тревог|стресс|болит|здоров|настроени)/iu.test(text)) {
+    return 'Сейчас тема самочувствия: отвечай тепло и поддерживающе, но не навязчиво.';
+  }
+  return '';
 }
 
 async function remember(text, kind = 'note') {
@@ -341,7 +424,7 @@ function profileContext() {
   return [name, facts ? `Факты о пользователе:\n${facts}` : '', notes ? `Явно сохранённые заметки:\n${notes}` : ''].filter(Boolean).join('\n\n');
 }
 
-function systemPrompt() {
+function systemPrompt(message = '') {
   const tone = state.settings.personality === 'classic'
     ? 'Говори по-русски спокойно, умно и без мата.'
     : state.settings.personality === 'street-max'
@@ -350,6 +433,7 @@ function systemPrompt() {
   return [
     `Ты ${state.settings.assistantName}, личный голосовой ассистент Windows.`,
     tone,
+    adaptiveToneHint(message),
     'Ты помнишь только явно сохранённые факты и локальную историю этого помощника. Не выдумывай воспоминания.',
     'Не утверждай, что ты кликнул, ввёл текст, открыл программу, изменил Windows, отправил сообщение, купил или удалил что-либо, пока локальное ядро не подтвердит результат. Открытие приложения из строгого разрешённого списка может выполниться сразу по явной команде пользователя; всё остальное требует подтверждения.',
     'Будь конкретным и кратким, пока пользователь не просит деталей. Отвечай на смысл последней реплики, как живой близкий приятель, а не как справочник команд.',
@@ -359,6 +443,8 @@ function systemPrompt() {
     'При диагностике и советах не отвечай одним общим вопросом: сразу назови 2–4 вероятные причины, предложи первый безопасный способ проверки и только затем при необходимости задай один конкретный вопрос. Начинай предложения с заглавной буквы.',
     'Отделяй совет от действия на ПК: объяснять и планировать можно сразу, а фактическое действие выполняет только локальное ядро. Никогда не маскируй догадку под выполненный результат.',
     knowledgeContext(),
+    mcpToolsContext(),
+    knowledgeGraphContext(message),
     buildCoachContext(poe2BuildCoach.active()),
     profileContext(),
   ].filter(Boolean).join('\n\n');
@@ -377,7 +463,7 @@ async function askCloud(message) {
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: state.settings.model, instructions: systemPrompt(), input: [...history, { role: 'user', content: message }], max_output_tokens: 500 }),
+      body: JSON.stringify({ model: state.settings.model, instructions: systemPrompt(message), input: [...history, { role: 'user', content: message }], max_output_tokens: 500 }),
       signal: AbortSignal.timeout(22_000),
     });
     if (!response.ok) throw new Error(`Модель вернула ${response.status}`);
@@ -424,7 +510,7 @@ function localConversation(message, includeHistory = true) {
   if (!last || last.role !== 'user' || last.content !== message) {
     history.push({ role: 'user', content: message });
   }
-  return [{ role: 'system', content: systemPrompt() }, ...history];
+  return [{ role: 'system', content: systemPrompt(message) }, ...history];
 }
 
 async function askLocalBrain(message, maxTokens = 260, includeHistory = true) {
@@ -764,7 +850,12 @@ function classify(message) {
     return { kind: 'unsupported_app', appName: clean(raw.replace(/^(?:открой|запусти|включи|open)\s*/iu, ''), 80) || 'это приложение' };
   }
   if ((match = raw.match(/^(?:найди|поищи|загугли)\s+(.+)$/iu))) return { kind: 'search', query: clean(match[1], 300), label: `Поиск: ${clean(match[1], 90)}`, risk: 'normal' };
-  if (/(?:^|\s)погода(?=$|\s|[,.!?])/iu.test(input)) return { kind: 'search', query: raw, label: `Поиск: ${raw.slice(0, 90)}`, risk: 'normal' };
+  if ((match = raw.match(/^(?:погугли|загугли|поищи в интернете|поищи в сети|найди в сети|найди в интернете)\s+(.+)$/iu))) return { kind: 'web_search', query: clean(match[1], 300) };
+  if ((match = raw.match(/(?:^|\s)(?:какая\s+)?погода(?:\s+(?:сейчас|сегодня))?\s+(?:в|во)\s+(.+)$/iu))) return { kind: 'weather', city: clean(match[1], 80) };
+  if (/^(?:какая\s+)?погода(?:\s+(?:сейчас|сегодня))?$/iu.test(input)) return { kind: 'weather', city: '' };
+  if ((match = raw.match(/^(?:я\s+)?съел[а]?\s*[:,—-]?\s*(.+)$/iu))) return { kind: 'log_meal', text: clean(match[1], 400) };
+  if (/^(?:что|чего)\s+я\s+(?:ел[а]?|съел[а]?)(?:\s+сегодня)?$/iu.test(input)) return { kind: 'meals_today' };
+  if ((match = raw.match(/^прочитай\s+(?:файл\s+)?(.+)$/iu))) return { kind: 'read_file', target: clean(match[1], 240) };
   return { kind: 'chat' };
 }
 
@@ -1046,6 +1137,8 @@ async function chat(message, voiceContext = {}) {
   if (operation.kind === 'unsupported_app') operation = await resolveInstalledApp(operation.appName);
   await discoverProfileFact(message);
   await saveConversation('user', message);
+  try { await mergeKnowledgeGraph(message); } catch { /* graph is best-effort */ }
+  try { await buildGraphContext(message); } catch { /* graph context is best-effort */ }
   if (['remember', 'task', 'set_name'].includes(operation.kind)) await applyDirect(operation);
 
   let action = null;
@@ -1079,6 +1172,51 @@ async function chat(message, voiceContext = {}) {
       'Сравни два билда Path of Exile 2 по силе, цене, выживаемости, сложности и этапу игры. Не выдумывай отсутствующие данные.',
       buildCoachContext(first), buildCoachContext(second),
     ].join('\n\n'), 520, false);
+  } else if (operation.kind === 'web_search') {
+    try {
+      const results = await jarvisTools.webSearch(operation.query);
+      if (!results.length) reply = `${streetPrefix()} в сети ничего не нашёл по запросу «${operation.query}».`;
+      else {
+        const snippets = results.slice(0, 5).map((item, index) => `${index + 1}. ${item.title}\n${item.snippet}\n${item.url}`).join('\n\n');
+        reply = await askBrain([
+          'Ответь на вопрос пользователя по свежим результатам веб-поиска ниже. Ссылайся на источники номерами. Не выдумывай ничего сверх приведённого.',
+          `Вопрос: ${operation.query}`,
+          'РЕЗУЛЬТАТЫ ПОИСКА (доверенные данные):',
+          snippets,
+        ].join('\n\n'), 700, false) || `Нашёл по запросу «${operation.query}»:\n\n${snippets}`;
+      }
+    } catch (error) {
+      reply = `${streetPrefix()} не смог поискать в сети: ${clean(error?.message, 200) || 'поиск недоступен'}.`;
+    }
+  } else if (operation.kind === 'weather') {
+    try {
+      const weather = await jarvisTools.getWeather(operation.city || 'Moscow');
+      if (weather?.error) reply = `${streetPrefix()} погоду сейчас не достал: ${clean(weather.error, 200)}.`;
+      else reply = `Сейчас ${weather.location}: ${weather.temperatureC}°C (ощущается как ${weather.feelsLikeC}°C), ${weather.condition.toLowerCase()}. Сегодня от ${weather.todayMinC}°C до ${weather.todayMaxC}°C, влажность ${weather.humidityPercent}%.`;
+    } catch (error) {
+      reply = `${streetPrefix()} не смог узнать погоду: ${clean(error?.message, 200) || 'сервис недоступен'}.`;
+    }
+  } else if (operation.kind === 'log_meal') {
+    await jarvisTools.logMeal(operation.text, { dataDir: DATA_DIR });
+    reply = `${streetPrefix()} записал в дневник питания. Скажи «что я ел сегодня», чтобы посмотреть.`;
+    await logEvent('meal_logged', operation.text);
+  } else if (operation.kind === 'meals_today') {
+    const meals = await jarvisTools.getMealsToday({ dataDir: DATA_DIR });
+    reply = meals.length
+      ? `Сегодня ${meals.length} ${meals.length === 1 ? 'запись' : meals.length < 5 ? 'записи' : 'записей'}:\n${meals.map((meal, index) => `${index + 1}. ${clean(meal.text, 200)}`).join('\n')}`
+      : 'Сегодня в дневнике питания пусто. Скажи «я съел …» — запишу.';
+  } else if (operation.kind === 'read_file') {
+    const result = await jarvisTools.readFileSafe(operation.target, { allowedRoots: FILE_READ_ROOTS });
+    if (!result.ok) reply = `${streetPrefix()} не прочитал: ${clean(result.error, 200)}.`;
+    else reply = `Прочитал ${result.path}:\n\n${clean(result.text, 4000)}`;
+  } else if (operation.kind === 'mcp_call') {
+    try {
+      const result = await callMcpTool(operation.tool, operation.arguments || {});
+      const rendered = typeof result === 'string' ? result : JSON.stringify(result);
+      reply = `MCP ${operation.tool}: ${clean(rendered, 4000) || 'пустой результат.'}`;
+    } catch (error) {
+      reply = `${streetPrefix()} MCP-инструмент не сработал: ${clean(error?.message, 200)}.`;
+    }
   } else if (['app', 'discovered_app', 'close_app', 'website'].includes(operation.kind) && operation.risk === 'normal' && state.settings.alwaysConfirm === false) {
     try {
       const result = await execute(operation);
@@ -1164,6 +1302,7 @@ async function handle(request, response) {
   const url = new URL(request.url || '/', `http://${HOST}:${PORT}`);
   try {
     if (request.method === 'GET' && url.pathname === '/api/bootstrap') return json(response, 200, publicState());
+    if (request.method === 'GET' && url.pathname === '/api/memory-graph') return json(response, 200, { data: await renderGraphJson(knowledgeGraph) });
     if (request.method === 'GET' && url.pathname === '/api/poe2-builds') return json(response, 200, { data: poe2BuildCoach.snapshot() });
     if (request.method === 'POST' && url.pathname === '/api/poe2-builds') {
       const payload = await bodyOf(request);
