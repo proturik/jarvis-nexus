@@ -357,11 +357,12 @@ if (Test-Path -LiteralPath $BrainInstaller -PathType Leaf) {
     }
 }
 
-# --- Signed auto-update check (no -AutoConfirm: the Update/Cancel dialog is the update notification) ---
+# --- Signed auto-update check (fully automatic: downloads, verifies and
+#     activates with the progress HUD; no user interaction required) ---
 $UpdaterScript = Join-Path $AppRoot 'private-channel\Invoke-JarvisUpdate.ps1'
 if (Test-Path -LiteralPath $UpdaterScript -PathType Leaf) {
     try {
-        & $UpdaterScript -ProgramRoot $AppRoot -IndexUrl $UpdateIndexUrl -DataRoot $DataRoot -StateRoot (Join-Path $InstallRoot 'update-state') -Port 3791 | Out-Null
+        & $UpdaterScript -ProgramRoot $AppRoot -IndexUrl $UpdateIndexUrl -DataRoot $DataRoot -StateRoot (Join-Path $InstallRoot 'update-state') -Port 3791 -AutoConfirm -Progress | Out-Null
     }
     catch {
         Write-Warning "JARVIS update check failed: $($_.Exception.Message)"
@@ -399,6 +400,18 @@ if ((Test-Path -LiteralPath $PetPath -PathType Leaf) -and -not (Test-ExactProces
 if ((Test-Path -LiteralPath $SensePath -PathType Leaf) -and -not (Test-ExactProcessRunning -ExecutablePath $SensePath -ProcessName 'JarvisSense.exe')) {
     New-Item -ItemType Directory -Path $SenseStateRoot -Force | Out-Null
     Start-Process -FilePath $SensePath -ArgumentList @('--install-root', ('"{0}"' -f $SenseStateRoot)) -WorkingDirectory (Split-Path -Parent $SensePath) -WindowStyle Hidden
+}
+
+# --- Background update watcher (auto-notify + auto-update with progress HUD) ---
+# Runs hidden while JARVIS is running; checks the signed channel on an interval,
+# shows a tray notification when a new release exists, then updates automatically.
+$UpdateWatcher = Join-Path $AppRoot 'private-channel\Start-JarvisUpdateWatcher.ps1'
+if (Test-Path -LiteralPath $UpdateWatcher -PathType Leaf) {
+    $watcherPowerShell = Join-Path $PSHOME 'powershell.exe'
+    if (-not (Test-Path -LiteralPath $watcherPowerShell -PathType Leaf)) {
+        $watcherPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    }
+    Start-Process -FilePath $watcherPowerShell -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"{0}"' -f $UpdateWatcher),'-ProgramRoot',('"{0}"' -f $AppRoot),'-IndexUrl',('"{0}"' -f $UpdateIndexUrl),'-DataRoot',('"{0}"' -f $DataRoot),'-StateRoot',('"{0}"' -f (Join-Path $InstallRoot 'update-state')),'-Port','3791') -WindowStyle Hidden | Out-Null
 }
 '@
 

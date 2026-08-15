@@ -9,6 +9,12 @@
   Safe to call from the live launcher: when the target directory is not yet a
   versioned program-only directory (no valid .jarvis-program-marker), the call
   returns immediately with Ok=$true / UpdateAvailable=$false instead of throwing.
+
+  -CheckOnly only reports whether a newer release exists (used by the
+  background watcher) and never downloads or changes anything.
+
+  -Progress shows the WinForms progress HUD (percentage + remaining time) while
+  the update downloads and installs; state is exchanged through a JSON file.
 #>
 [CmdletBinding()]
 param(
@@ -23,6 +29,8 @@ param(
     [int]$StopTimeoutSeconds = 30,
     [int]$HealthTimeoutSeconds = 60,
     [switch]$AutoConfirm,
+    [switch]$CheckOnly,
+    [switch]$Progress,
     # Test-only: permit loopback HTTP (http://127.0.0.1) for index/package URLs.
     [switch]$AllowLoopbackHttp
 )
@@ -81,6 +89,10 @@ try {
     throw
 }
 
+if ($CheckOnly) {
+    return [pscustomobject]@{ Ok = $true; UpdateAvailable = $true; Version = $release.Version; ReleaseId = $release.ReleaseId }
+}
+
 if (-not $AutoConfirm) {
     $confirmed = & (Join-Path $PSScriptRoot 'Show-JarvisUpdatePrompt.ps1') -CurrentVersion $CurrentVersion -NewVersion ([string]$release.Version)
     if (-not $confirmed) {
@@ -88,34 +100,90 @@ if (-not $AutoConfirm) {
     }
 }
 
-$downloadDirectory = Join-Path $DataRoot 'downloads'
-New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
-$downloaded = Get-JarvisReleasePackage -Release $release -OutputDirectory $downloadDirectory -AllowLoopbackHttp:$AllowLoopbackHttp
-
-$handoffArgs = @{
-    ProgramRoot = $installFull
-    EnvelopePath = $downloaded.EnvelopePath
-    PackagePath = $downloaded.PackagePath
-    CurrentVersion = $CurrentVersion
-    StateRoot = $StateRoot
-    DataRoot = $DataRoot
-    Port = $Port
-    PublicKeyPath = $PublicKeyPath
-    PinnedPublicKeyFingerprint = $PinnedPublicKeyFingerprint
-    StopTimeoutSeconds = $StopTimeoutSeconds
-    HealthTimeoutSeconds = $HealthTimeoutSeconds
+$statusFile = Join-Path $StateRoot 'update-progress.json'
+$progressProcess = $null
+if ($Progress) {
+    New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
+    $progressScript = Join-Path $PSScriptRoot 'Show-JarvisUpdateProgress.ps1'
+    if (Test-Path -LiteralPath $progressScript -PathType Leaf) {
+        $progressPowerShell = Join-Path $PSHOME 'powershell.exe'
+        if (-not (Test-Path -LiteralPath $progressPowerShell -PathType Leaf)) {
+            $progressPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        }
+        $progressProcess = Start-Process -FilePath $progressPowerShell `
+            -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $progressScript + '" -StatusFile "' + $statusFile + '"') `
+            -PassThru -WindowStyle Hidden
+    }
 }
-$handoff = & (Join-Path $PSScriptRoot 'Invoke-JarvisHandoff.ps1') @handoffArgs
 
-return [pscustomobject]@{
-    Ok = $true
-    UpdateAvailable = $true
-    Activated = $handoff.Activated
-    Version = $release.Version
-    ReleaseId = $release.ReleaseId
-    StagePath = $handoff.StagePath
-    BackupPath = $handoff.BackupPath
-    Restarted = $handoff.Restarted
-    Pid = $handoff.Pid
-    Uri = $handoff.Uri
+$progressCallback = $null
+if ($Progress) {
+    $progressCallback = {
+        param($info)
+        $state = [ordered]@{
+            State = 'downloading'
+            Version = [string]$release.Version
+            Percent = [int]$info.Percent
+            RemainingSeconds = [int]$info.RemainingSeconds
+            Message = ''
+        }
+        try {
+            $state | ConvertTo-Json -Compress | Set-Content -LiteralPath $statusFile -Encoding UTF8
+        } catch { }
+    }
+}
+
+try {
+    $downloadDirectory = Join-Path $DataRoot 'downloads'
+    New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
+    $downloaded = Get-JarvisReleasePackage -Release $release -OutputDirectory $downloadDirectory `
+        -AllowLoopbackHttp:$AllowLoopbackHttp -ProgressCallback $progressCallback
+
+    if ($Progress) {
+        $state = [ordered]@{ State = 'installing'; Version = [string]$release.Version; Percent = 100; RemainingSeconds = 0; Message = '' }
+        try { $state | ConvertTo-Json -Compress | Set-Content -LiteralPath $statusFile -Encoding UTF8 } catch { }
+    }
+
+    $handoffArgs = @{
+        ProgramRoot = $installFull
+        EnvelopePath = $downloaded.EnvelopePath
+        PackagePath = $downloaded.PackagePath
+        CurrentVersion = $CurrentVersion
+        StateRoot = $StateRoot
+        DataRoot = $DataRoot
+        Port = $Port
+        PublicKeyPath = $PublicKeyPath
+        PinnedPublicKeyFingerprint = $PinnedPublicKeyFingerprint
+        StopTimeoutSeconds = $StopTimeoutSeconds
+        HealthTimeoutSeconds = $HealthTimeoutSeconds
+    }
+    $handoff = & (Join-Path $PSScriptRoot 'Invoke-JarvisHandoff.ps1') @handoffArgs
+
+    if ($Progress) {
+        $state = [ordered]@{ State = 'done'; Version = [string]$release.Version; Percent = 100; RemainingSeconds = 0; Message = '' }
+        try { $state | ConvertTo-Json -Compress | Set-Content -LiteralPath $statusFile -Encoding UTF8 } catch { }
+    }
+
+    return [pscustomobject]@{
+        Ok = $true
+        UpdateAvailable = $true
+        Activated = $handoff.Activated
+        Version = $release.Version
+        ReleaseId = $release.ReleaseId
+        StagePath = $handoff.StagePath
+        BackupPath = $handoff.BackupPath
+        Restarted = $handoff.Restarted
+        Pid = $handoff.Pid
+        Uri = $handoff.Uri
+    }
+} catch {
+    if ($Progress) {
+        $state = [ordered]@{ State = 'error'; Version = [string]$release.Version; Percent = 0; RemainingSeconds = 0; Message = clean($_.Exception.Message, 240) }
+        try { $state | ConvertTo-Json -Compress | Set-Content -LiteralPath $statusFile -Encoding UTF8 } catch { }
+    }
+    throw
+} finally {
+    if ($Progress -and $null -ne $progressProcess) {
+        try { $null = $progressProcess.WaitForExit(3000) } catch { }
+    }
 }

@@ -78,7 +78,8 @@ function Get-JarvisWebResource {
         [Parameter(Mandatory)][long]$MaxBytes,
         [string]$ExpectedSha256Hex = '',
         [ValidateRange(0, 32)][int]$MaxRedirects = 5,
-        [switch]$AllowLoopbackHttp
+        [switch]$AllowLoopbackHttp,
+        [scriptblock]$ProgressCallback = $null
     )
     if ($MaxBytes -le 0) { throw 'MaxBytes must be positive.' }
     if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256Hex) -and $ExpectedSha256Hex -notmatch '^[0-9A-Fa-f]{64}$') {
@@ -129,6 +130,10 @@ function Get-JarvisWebResource {
         $sha = [Security.Cryptography.SHA256]::Create()
         $buffer = New-Object byte[] 65536
         [long]$totalBytes = 0
+        [long]$totalExpected = $MaxBytes
+        if ($response.ContentLength -gt 0) { $totalExpected = [long]$response.ContentLength }
+        $startTime = [DateTime]::UtcNow
+        $lastReport = [DateTime]::MinValue
         while ($true) {
             $read = $inputStream.Read($buffer, 0, $buffer.Length)
             if ($read -le 0) { break }
@@ -136,6 +141,24 @@ function Get-JarvisWebResource {
             if ($totalBytes -gt $MaxBytes) { throw "Downloaded resource is too large (over $MaxBytes bytes)." }
             $outputStream.Write($buffer, 0, $read)
             $null = $sha.TransformBlock($buffer, 0, $read, $null, 0)
+            if ($null -ne $ProgressCallback) {
+                $now = [DateTime]::UtcNow
+                if (($now - $lastReport).TotalMilliseconds -ge 400) {
+                    $elapsed = ($now - $startTime).TotalSeconds
+                    $rate = if ($elapsed -gt 0.5) { $totalBytes / $elapsed } else { 0 }
+                    $remainingBytes = $totalExpected - $totalBytes
+                    $remainingSeconds = if ($rate -gt 0) { $remainingBytes / $rate } else { 0 }
+                    $percent = if ($totalExpected -gt 0) { [math]::Min(100, [math]::Max(0, [math]::Round(100.0 * $totalBytes / $totalExpected))) } else { 0 }
+                    $progressInfo = @{
+                        Percent = [int]$percent
+                        Bytes = [long]$totalBytes
+                        TotalBytes = [long]$totalExpected
+                        RemainingSeconds = [int]$remainingSeconds
+                    }
+                    & $ProgressCallback $progressInfo
+                    $lastReport = $now
+                }
+            }
         }
         $null = $sha.TransformFinalBlock((New-Object byte[] 0), 0, 0)
         $actualHash = ([BitConverter]::ToString($sha.Hash)).Replace('-', '').ToUpperInvariant()
@@ -167,11 +190,12 @@ function Get-JarvisReleaseIndex {
         [string]$PinnedPublicKeyFingerprint = $script:ProductionPublicKeyFingerprint,
         [Parameter(Mandatory)][ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')][string]$CurrentVersion,
         [string]$ExpectedChannel = 'private',
-        [switch]$AllowLoopbackHttp
+        [switch]$AllowLoopbackHttp,
+        [scriptblock]$ProgressCallback = $null
     )
     $indexParent = Split-Path -Parent ([IO.Path]::GetFullPath($IndexPath))
     New-Item -ItemType Directory -Path $indexParent -Force | Out-Null
-    Get-JarvisWebResource -Url $IndexUrl -OutputPath $IndexPath -MaxBytes 262144 -AllowLoopbackHttp:$AllowLoopbackHttp | Out-Null
+    Get-JarvisWebResource -Url $IndexUrl -OutputPath $IndexPath -MaxBytes 262144 -AllowLoopbackHttp:$AllowLoopbackHttp -ProgressCallback $ProgressCallback | Out-Null
     $verifyArgs = @{
         IndexPath = $IndexPath; PublicKeyPath = $PublicKeyPath; ExpectedChannel = $ExpectedChannel
         AllowLoopbackHttp = $AllowLoopbackHttp
@@ -199,7 +223,8 @@ function Get-JarvisReleasePackage {
     param(
         [Parameter(Mandatory)]$Release,
         [Parameter(Mandatory)][string]$OutputDirectory,
-        [switch]$AllowLoopbackHttp
+        [switch]$AllowLoopbackHttp,
+        [scriptblock]$ProgressCallback = $null
     )
     $version = [string](Get-ReleaseField -Release $Release -Name 'Version')
     $releaseId = [string](Get-ReleaseField -Release $Release -Name 'ReleaseId')
@@ -223,7 +248,7 @@ function Get-JarvisReleasePackage {
     Get-JarvisWebResource -Url $envelopeUrl -OutputPath $envelopePath -MaxBytes 131072 `
         -ExpectedSha256Hex $envelopeSha256 -AllowLoopbackHttp:$AllowLoopbackHttp | Out-Null
     Get-JarvisWebResource -Url $packageUrl -OutputPath $packagePath -MaxBytes $packageBytes `
-        -ExpectedSha256Hex $packageSha256 -AllowLoopbackHttp:$AllowLoopbackHttp | Out-Null
+        -ExpectedSha256Hex $packageSha256 -AllowLoopbackHttp:$AllowLoopbackHttp -ProgressCallback $ProgressCallback | Out-Null
     $actualBytes = (Get-Item -LiteralPath $packagePath).Length
     if ($actualBytes -ne $packageBytes) { throw 'Downloaded package size does not match the release index.' }
     return [pscustomobject]@{
