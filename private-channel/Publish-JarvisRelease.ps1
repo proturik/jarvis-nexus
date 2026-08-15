@@ -89,13 +89,16 @@ try {
         'Jarvis.PrivateChannel.psm1',
         'Jarvis.UpdateState.psm1',
         'Jarvis.ReleaseIndex.psm1',
+        'Jarvis.Subscription.psm1',
         'Invoke-JarvisUpdate.ps1',
         'Invoke-JarvisHandoff.ps1',
         'Invoke-JarvisStagedUpdate.ps1',
+        'Invoke-JarvisSubscriptionCheck.ps1',
         'Restore-JarvisUpdateBackup.ps1',
         'Stop-JarvisProgram.ps1',
         'Start-JarvisProgram.ps1',
         'Show-JarvisUpdatePrompt.ps1',
+        'Show-JarvisUpdateNotification.ps1',
         'public-key.xml'
     )
     foreach ($name in $clientFiles) {
