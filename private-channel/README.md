@@ -35,7 +35,13 @@ Issuer output files are never overwritten. Keep signed licences, manifests and r
 
 ## Staged updater
 
-Update ZIP files must contain only a `payload/` tree. The updater rejects path traversal, unsafe Windows names, duplicate paths, reparse-point roots, excessive file counts, expanded-size limits and suspicious compression ratios.
+Update ZIP files must contain only a `payload/` tree, and that tree must include the program directory marker file `.jarvis-program-marker` at its `payload/` root. The updater rejects path traversal, unsafe Windows names, duplicate paths, reparse-point roots, excessive file counts, expanded-size limits and suspicious compression ratios.
+
+A program directory is recognised by a fixed marker file named `.jarvis-program-marker` whose exact content is `JARVIS NEXUS ULTRA program directory v1`. Activation refuses any current install or incoming payload that is missing or mismatching it, and rollback refuses unmarked backups.
+
+The staging directory ACL is restricted to the current Windows owner and SYSTEM before extraction, so extracted payload children inherit that restricted ACL.
+
+The DPAPI-protected state file is size-capped at 16 KiB and rejected if larger.
 
 Verify and stage without changing the current program:
 

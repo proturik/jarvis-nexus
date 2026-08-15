@@ -103,6 +103,7 @@ $newMoved = $false
 $keepStage = $false
 try {
     $lock = Lock-JarvisUpdateState -StateRoot $StateRoot
+    if ($Activate) { Test-JarvisProgramMarker -Directory $installFull }
     $state = Read-JarvisUpdateState -StateRoot $StateRoot
     $trustedFloor = if ([version]$state.HighestAcceptedVersion -gt [version]$CurrentVersion) { $state.HighestAcceptedVersion } else { $CurrentVersion }
     $verified = Test-JarvisSignedEnvelope -ExpectedKind update -EnvelopePath $EnvelopePath -PackagePath $PackagePath -CurrentVersion $trustedFloor
@@ -112,6 +113,7 @@ try {
     $exclusiveHash = Get-StreamSha256 -Stream $packageStream
     if ($exclusiveHash -ne $verified.PackageHash) { throw 'Update package changed after signature verification.' }
     New-Item -ItemType Directory -Path $stageRoot | Out-Null
+    Set-JarvisRestrictedAcl -Path $stageRoot | Out-Null
     $expanded = Expand-SafePayload -PackageStream $packageStream -StageRoot $stageRoot
     $packageStream.Dispose(); $packageStream = $null
 
@@ -127,6 +129,7 @@ try {
         return [pscustomobject]@{ Ok=$true; Activated=$false; Version=$verified.Version; ReleaseId=$verified.ReleaseId; StagePath=$stageRoot; BackupPath=$null }
     }
 
+    Test-JarvisProgramMarker -Directory $expanded.PayloadRoot
     $backupRoot = Join-Path $installParent ('.jarvis-backup-' + $verified.Version + '-' + [Guid]::NewGuid().ToString('N'))
     Move-Item -LiteralPath $installFull -Destination $backupRoot
     $oldMoved = $true

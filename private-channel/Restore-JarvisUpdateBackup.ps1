@@ -19,12 +19,12 @@ foreach ($path in @($installFull, $backupFull)) {
     if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "Required rollback directory is missing: $path" }
     if (((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Rollback refuses reparse point: $path" }
 }
-
 $lock = $null
 $failedRoot = Join-Path $parent ('.jarvis-failed-' + [Guid]::NewGuid().ToString('N'))
 $currentMoved = $false
 try {
     $lock = Lock-JarvisUpdateState -StateRoot $StateRoot
+    Test-JarvisProgramMarker -Directory $backupFull
     Move-Item -LiteralPath $installFull -Destination $failedRoot
     $currentMoved = $true
     Move-Item -LiteralPath $backupFull -Destination $installFull

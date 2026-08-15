@@ -5,6 +5,8 @@ Add-Type -AssemblyName System.Security -ErrorAction Stop
 $script:StateFileName = 'update-state.dpapi'
 $script:LockFileName = 'update.lock'
 $script:Entropy = [Text.Encoding]::UTF8.GetBytes('JARVIS NEXUS UPDATE STATE v1')
+$script:ProgramMarkerName = '.jarvis-program-marker'
+$script:ProgramMarkerContent = 'JARVIS NEXUS ULTRA program directory v1'
 
 function Assert-NoReparseInPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -22,15 +24,58 @@ function Assert-NoReparseInPath {
     }
 }
 
+function Get-JarvisProgramMarkerName {
+    return $script:ProgramMarkerName
+}
+
+function Get-JarvisProgramMarkerContent {
+    return $script:ProgramMarkerContent
+}
+
+function Test-JarvisProgramMarker {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Directory)
+    $markerPath = Join-Path $Directory $script:ProgramMarkerName
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { throw "Program directory marker is missing in: $Directory" }
+    $markerItem = Get-Item -LiteralPath $markerPath -Force
+    if (($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Program directory marker is a reparse point in: $Directory" }
+    $expected = [Text.Encoding]::ASCII.GetBytes($script:ProgramMarkerContent)
+    $stream = $null
+    try {
+        $stream = New-Object IO.FileStream($markerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($stream.Length -gt 256) { throw 'Program directory marker is too large.' }
+        $buffer = New-Object byte[] ([int]$stream.Length)
+        $read = 0
+        while ($read -lt $buffer.Length) {
+            $n = $stream.Read($buffer, $read, $buffer.Length - $read)
+            if ($n -le 0) { break }
+            $read += $n
+        }
+        if ($read -ne $buffer.Length) { throw 'Program directory marker could not be read completely.' }
+        if ([Convert]::ToBase64String($buffer) -ne [Convert]::ToBase64String($expected)) { throw "Program directory marker mismatch in: $Directory" }
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Set-JarvisRestrictedAcl {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    Assert-NoReparseInPath -Path $fullPath
+    $owner = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    & icacls.exe $fullPath /inheritance:r /grant:r "${owner}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to restrict directory ACL (icacls exit $LASTEXITCODE)." }
+    return $fullPath
+}
+
 function Initialize-StateRoot {
     param([Parameter(Mandatory)][string]$StateRoot)
     $fullRoot = [IO.Path]::GetFullPath($StateRoot)
     Assert-NoReparseInPath -Path $fullRoot
     New-Item -ItemType Directory -Path $fullRoot -Force | Out-Null
     Assert-NoReparseInPath -Path $fullRoot
-    $owner = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    & icacls.exe $fullRoot /inheritance:r /grant:r "${owner}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to restrict update-state ACL (icacls exit $LASTEXITCODE)." }
+    Set-JarvisRestrictedAcl -Path $fullRoot | Out-Null
     return $fullRoot
 }
 
@@ -54,14 +99,33 @@ function New-EmptyState {
     }
 }
 
-function Read-JarvisUpdateState {
+function Read-BoundedStateBytes {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][int]$MaxBytes
+    )
+    $stream = $null
+    try {
+        $stream = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($stream.Length -gt $MaxBytes) { throw 'Protected update state is too large.' }
+        $buffer = New-Object byte[] ([int]$stream.Length)
+        $read = 0
+        while ($read -lt $buffer.Length) {
+            $n = $stream.Read($buffer, $read, $buffer.Length - $read)
+            if ($n -le 0) { break }
+            $read += $n
+        }
+        if ($read -ne $buffer.Length) { throw 'Protected update state could not be read completely.' }
+        return ,$buffer
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function ConvertFrom-ProtectedStateFile {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$StateRoot)
-    $fullRoot = Initialize-StateRoot -StateRoot $StateRoot
-    $statePath = Join-Path $fullRoot $script:StateFileName
-    if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { return New-EmptyState }
-    Assert-NoReparseInPath -Path $statePath
-    $protectedBytes = [IO.File]::ReadAllBytes($statePath)
+    param([Parameter(Mandatory)][string]$Path)
+    $protectedBytes = Read-BoundedStateBytes -Path $Path -MaxBytes 16384
     $plainBytes = $null
     try {
         $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect(
@@ -72,7 +136,7 @@ function Read-JarvisUpdateState {
         throw "Protected update state cannot be read or was tampered with: $($_.Exception.Message)"
     } finally {
         if ($null -ne $plainBytes) { [Array]::Clear($plainBytes, 0, $plainBytes.Length) }
-        [Array]::Clear($protectedBytes, 0, $protectedBytes.Length)
+        if ($null -ne $protectedBytes) { [Array]::Clear($protectedBytes, 0, $protectedBytes.Length) }
     }
     if ([int]$state.schemaVersion -ne 1) { throw 'Unsupported update-state schema.' }
     $version = [string]$state.highestAcceptedVersion
@@ -90,6 +154,16 @@ function Read-JarvisUpdateState {
         AcceptedReleaseIds = $releaseIds
         TrustedUtc = $trusted.ToUniversalTime()
     }
+}
+
+function Read-JarvisUpdateState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$StateRoot)
+    $fullRoot = Initialize-StateRoot -StateRoot $StateRoot
+    $statePath = Join-Path $fullRoot $script:StateFileName
+    if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { return New-EmptyState }
+    Assert-NoReparseInPath -Path $statePath
+    ConvertFrom-ProtectedStateFile -Path $statePath
 }
 
 function Lock-JarvisUpdateState {
@@ -149,6 +223,7 @@ function Update-JarvisUpdateState {
     } | ConvertTo-Json -Compress
     $plainBytes = [Text.Encoding]::UTF8.GetBytes($payload)
     $protectedBytes = $null
+    $tempPath = $null
     try {
         $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
             $plainBytes, $script:Entropy, [Security.Cryptography.DataProtectionScope]::CurrentUser
@@ -157,12 +232,14 @@ function Update-JarvisUpdateState {
         $statePath = Join-Path $fullRoot $script:StateFileName
         $tempPath = $statePath + '.tmp-' + [Guid]::NewGuid().ToString('N')
         [IO.File]::WriteAllBytes($tempPath, $protectedBytes)
+        ConvertFrom-ProtectedStateFile -Path $tempPath | Out-Null
         Move-Item -LiteralPath $tempPath -Destination $statePath -Force
+        $tempPath = $null
     } finally {
         [Array]::Clear($plainBytes, 0, $plainBytes.Length)
         if ($null -ne $protectedBytes) { [Array]::Clear($protectedBytes, 0, $protectedBytes.Length) }
+        if ($null -ne $tempPath -and (Test-Path -LiteralPath $tempPath)) { Remove-Item -LiteralPath $tempPath -Force }
     }
-    Read-JarvisUpdateState -StateRoot $StateRoot
 }
 
-Export-ModuleMember -Function Read-JarvisUpdateState, Lock-JarvisUpdateState, Test-JarvisUpdateCandidate, Update-JarvisUpdateState
+Export-ModuleMember -Function Read-JarvisUpdateState, Lock-JarvisUpdateState, Test-JarvisUpdateCandidate, Update-JarvisUpdateState, Get-JarvisProgramMarkerName, Get-JarvisProgramMarkerContent, Test-JarvisProgramMarker, Set-JarvisRestrictedAcl
