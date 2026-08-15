@@ -312,11 +312,36 @@ $NodePath = Join-Path $InstallRoot 'runtime\node.exe'
 $ServerPath = Join-Path $AppRoot 'ultra-server.mjs'
 $PetPath = Join-Path $InstallRoot 'desktop-shell\JarvisPet.exe'
 $SensePath = Join-Path $InstallRoot 'desktop-shell\sense\JarvisSense.exe'
-$SenseStateRoot = Join-Path $InstallRoot 'sense-state'
-$DataRoot = Join-Path $InstallRoot 'data'
 $BootstrapUri = 'http://127.0.0.1:3791/api/bootstrap'
 $PurchaseUrl = '__PURCHASE_URL__'
 $UpdateIndexUrl = '__INDEX_URL__'
+
+# Stable user-data root: independent of where the program is extracted, so
+# re-downloading or reinstalling never loses memory, profile, settings, tasks
+# or the license. Kept in LOCALAPPDATA for both installed and portable builds.
+$LocalAppData = [Environment]::GetFolderPath('LocalApplicationData')
+$DataRoot = Join-Path $LocalAppData 'JARVIS NEXUS ULTRA\data'
+$SenseStateRoot = Join-Path $LocalAppData 'JARVIS NEXUS ULTRA\sense-state'
+$StateRoot = Join-Path $LocalAppData 'JARVIS NEXUS ULTRA\update-state'
+
+# One-time migration of legacy in-folder data (older portable builds kept data
+# beside the program; move it into the stable root without overwriting).
+$legacyData = Join-Path $InstallRoot 'data'
+if ($legacyData -ne $DataRoot -and (Test-Path -LiteralPath $legacyData -PathType Container)) {
+    New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
+    Get-ChildItem -LiteralPath $legacyData -Force | ForEach-Object {
+        $dest = Join-Path $DataRoot $_.Name
+        if (-not (Test-Path -LiteralPath $dest)) { Move-Item -LiteralPath $_.FullName -Destination $dest -Force }
+    }
+}
+$legacySenseState = Join-Path $InstallRoot 'sense-state'
+if ($legacySenseState -ne $SenseStateRoot -and (Test-Path -LiteralPath $legacySenseState -PathType Container)) {
+    New-Item -ItemType Directory -Path $SenseStateRoot -Force | Out-Null
+    Get-ChildItem -LiteralPath $legacySenseState -Force | ForEach-Object {
+        $dest = Join-Path $SenseStateRoot $_.Name
+        if (-not (Test-Path -LiteralPath $dest)) { Move-Item -LiteralPath $_.FullName -Destination $dest -Force }
+    }
+}
 
 foreach ($required in @($NodePath, $ServerPath)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
@@ -363,7 +388,7 @@ if (Test-Path -LiteralPath $BrainInstaller -PathType Leaf) {
 $UpdaterScript = Join-Path $AppRoot 'private-channel\Invoke-JarvisUpdate.ps1'
 if (Test-Path -LiteralPath $UpdaterScript -PathType Leaf) {
     try {
-        & $UpdaterScript -ProgramRoot $AppRoot -IndexUrl $UpdateIndexUrl -DataRoot $DataRoot -StateRoot (Join-Path $InstallRoot 'update-state') -Port 3791 | Out-Null
+        & $UpdaterScript -ProgramRoot $AppRoot -IndexUrl $UpdateIndexUrl -DataRoot $DataRoot -StateRoot $StateRoot -Port 3791 | Out-Null
     }
     catch {
         Write-Warning "JARVIS update check failed: $($_.Exception.Message)"
@@ -412,7 +437,7 @@ if (Test-Path -LiteralPath $UpdateWatcher -PathType Leaf) {
     if (-not (Test-Path -LiteralPath $watcherPowerShell -PathType Leaf)) {
         $watcherPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     }
-    Start-Process -FilePath $watcherPowerShell -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"{0}"' -f $UpdateWatcher),'-ProgramRoot',('"{0}"' -f $AppRoot),'-IndexUrl',('"{0}"' -f $UpdateIndexUrl),'-DataRoot',('"{0}"' -f $DataRoot),'-StateRoot',('"{0}"' -f (Join-Path $InstallRoot 'update-state')),'-Port','3791') -WindowStyle Hidden | Out-Null
+    Start-Process -FilePath $watcherPowerShell -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"{0}"' -f $UpdateWatcher),'-ProgramRoot',('"{0}"' -f $AppRoot),'-IndexUrl',('"{0}"' -f $UpdateIndexUrl),'-DataRoot',('"{0}"' -f $DataRoot),'-StateRoot',('"{0}"' -f $StateRoot),'-Port','3791') -WindowStyle Hidden | Out-Null
 }
 
 # --- Post-install / post-start health check ---

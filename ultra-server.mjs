@@ -3,7 +3,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { contextualUserMessage, passiveHotFollowup, redactSensitiveText, sanitizeAmbientContext } from './conversation-intelligence.mjs';
@@ -15,11 +15,25 @@ import { McpClient, loadMcpConfig, listAllTools } from './mcp-client.mjs';
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.join(ROOT, 'public-ultra');
 const ASSETS_DIR = path.join(ROOT, 'assets');
-// User data lives outside the versioned program directory. The updater replaces
-// ROOT atomically, so anything that must survive an update (conversations, memory,
-// profile, settings, tasks, PoE2 builds) is rooted at DATA_DIR, which can be moved
-// via JARVIS_DATA_DIR. Without the override the original ROOT/data layout is used.
-const DATA_DIR = process.env.JARVIS_DATA_DIR ? path.resolve(process.env.JARVIS_DATA_DIR) : path.join(ROOT, 'data');
+// User data lives in a stable location OUTSIDE the program directory so that
+// re-downloading, reinstalling or moving the program never loses conversations,
+// memory, profile, settings, tasks or the license. The canonical root is
+// %LOCALAPPDATA%\JARVIS NEXUS ULTRA\data. JARVIS_DATA_DIR still overrides it for
+// tests and custom layouts, unless it points at a legacy in-program location
+// (ROOT\data or the install root's sibling data dir from older portable builds).
+const STABLE_DATA_DIR = path.join(
+  process.env.LOCALAPPDATA || path.join(ROOT, '..'),
+  'JARVIS NEXUS ULTRA', 'data',
+);
+function normalizePath(value) { return path.resolve(value).toLowerCase(); }
+const LEGACY_IN_PROGRAM_DIRS = new Set([
+  normalizePath(path.join(ROOT, 'data')),
+  normalizePath(path.join(ROOT, '..', 'data')),
+]);
+const requestedDataDir = process.env.JARVIS_DATA_DIR ? path.resolve(process.env.JARVIS_DATA_DIR) : STABLE_DATA_DIR;
+const DATA_DIR = LEGACY_IN_PROGRAM_DIRS.has(normalizePath(requestedDataDir))
+  ? STABLE_DATA_DIR
+  : requestedDataDir;
 const KNOWLEDGE_FILE = path.join(ROOT, 'knowledge', 'jarvis-core.json');
 const HOST = '127.0.0.1';
 const PORT = Number.parseInt(process.env.JARVIS_ULTRA_PORT || '3791', 10);
@@ -244,8 +258,31 @@ function sanitiseProfile(value) {
   };
 }
 
+async function migrateLegacyData() {
+  // Older portable builds kept user data beside the program (ROOT\..\data) or
+  // inside it (ROOT\data). Move any such files into the stable DATA_DIR once,
+  // without overwriting anything that is already there.
+  const legacyCandidates = [path.join(ROOT, '..', 'data'), path.join(ROOT, 'data')];
+  for (const legacy of legacyCandidates) {
+    if (normalizePath(legacy) === normalizePath(DATA_DIR)) continue;
+    try {
+      const entries = await readdir(legacy, { withFileTypes: true });
+      for (const entry of entries) {
+        const source = path.join(legacy, entry.name);
+        const target = path.join(DATA_DIR, entry.name);
+        try {
+          await access(target);
+        } catch {
+          try { await rename(source, target); } catch { /* keep going */ }
+        }
+      }
+    } catch { /* legacy dir may not exist */ }
+  }
+}
+
 async function boot() {
   await mkdir(DATA_DIR, { recursive: true });
+  await migrateLegacyData();
   const [settings, profile, memories, tasks, events, conversations, knowledge] = await Promise.all([
     readJson(FILES.settings, {}),
     readJson(FILES.profile, {}),

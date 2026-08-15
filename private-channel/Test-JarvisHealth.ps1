@@ -113,9 +113,10 @@ if (Test-Path -LiteralPath $publicKeyPath -PathType Leaf) {
     Add-Check 'Публичный ключ (пин)' $false 'public-key.xml отсутствует'
 }
 
-# --- Data directories ---
+# --- Data directories (stable location, survives reinstall) ---
+$stableRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'JARVIS NEXUS ULTRA'
 foreach ($dir in @('data', 'sense-state', 'update-state')) {
-    $full = Join-Path (Split-Path -Parent $installFull) $dir
+    $full = Join-Path $stableRoot $dir
     Add-Check "Каталог $dir" (Test-Path -LiteralPath $full -PathType Container) $full
 }
 
