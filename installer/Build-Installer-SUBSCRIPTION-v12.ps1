@@ -192,6 +192,10 @@ $nodeVersion = Test-NodeVersion $nodePath
 $serverSource = Need-Leaf (Join-Path $projectRoot 'ultra-server.mjs') 'ULTRA server entrypoint'
 Need-Leaf (Join-Path $projectRoot 'conversation-intelligence.mjs') 'conversation intelligence' | Out-Null
 Need-Leaf (Join-Path $projectRoot 'poe2-build-coach.mjs') 'PoE2 build coach' | Out-Null
+Need-Leaf (Join-Path $projectRoot 'jarvis-tools.mjs') 'built-in tools' | Out-Null
+Need-Leaf (Join-Path $projectRoot 'knowledge-graph.mjs') 'knowledge graph' | Out-Null
+Need-Leaf (Join-Path $projectRoot 'mcp-client.mjs') 'MCP client' | Out-Null
+Need-Leaf (Join-Path $projectRoot 'mcp-servers.example.json') 'MCP example config' | Out-Null
 Need-Leaf (Join-Path $projectRoot 'knowledge\jarvis-core.json') 'knowledge core' | Out-Null
 Need-Dir (Join-Path $projectRoot 'public-ultra') 'public-ultra directory' | Out-Null
 Need-Dir (Join-Path $projectRoot 'assets') 'assets directory' | Out-Null
@@ -216,6 +220,10 @@ New-Item -ItemType Directory -Path $dataPayload, $senseStatePayload -ErrorAction
 Copy-Leaf $serverSource $appPayload 'ULTRA server entrypoint'
 Copy-Leaf (Join-Path $projectRoot 'conversation-intelligence.mjs') $appPayload 'conversation intelligence'
 Copy-Leaf (Join-Path $projectRoot 'poe2-build-coach.mjs') $appPayload 'PoE2 build coach'
+Copy-Leaf (Join-Path $projectRoot 'jarvis-tools.mjs') $appPayload 'built-in tools'
+Copy-Leaf (Join-Path $projectRoot 'knowledge-graph.mjs') $appPayload 'knowledge graph'
+Copy-Leaf (Join-Path $projectRoot 'mcp-client.mjs') $appPayload 'MCP client'
+Copy-Leaf (Join-Path $projectRoot 'mcp-servers.example.json') $appPayload 'MCP example config'
 Copy-Tree (Join-Path $projectRoot 'public-ultra') $appPayload 'public-ultra directory'
 Copy-Tree (Join-Path $projectRoot 'assets') $appPayload 'assets directory'
 Copy-Tree (Join-Path $projectRoot 'windows-control') $appPayload 'windows-control directory'
