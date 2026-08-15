@@ -81,6 +81,50 @@ Feed the returned `EnvelopePath`/`PackagePath` to `Invoke-JarvisStagedUpdate.ps1
 
 Transport rules: HTTPS only (loopback HTTP is allowed only via an explicit test-only switch), no credentials in URLs, manual redirect handling that re-checks scheme and host on every hop, DNS resolution must not point to loopback/link-local/private/multicast addresses, bounded streaming with enforced size caps, and downloaded bytes must match the signed SHA-256 exactly before they are written into place.
 
+### Publishing (GitHub Pages)
+
+The chosen transport is **GitHub Pages** — static HTTPS hosting on `https://<user>.github.io/<repo>/`. Its public IPs and HTTPS certificate satisfy the downloader's checks, and it needs no per-request authentication (the downloader uses plain GET). Hosting the files publicly does not weaken the channel: trust comes entirely from the owner's signature and pinned SHA-256, and release packages contain no secrets. Note: Pages is free for a public repository; a private repository requires a paid GitHub plan.
+
+Suggested layout on the Pages branch:
+
+```
+release-index.json
+releases/<releaseId>/<releaseId>.update.json
+releases/<releaseId>/jarvis-<version>.zip
+```
+
+Owner workflow for one release:
+
+```powershell
+# 1. Build the update ZIP (a payload/ tree with .jarvis-program-marker), then sign its manifest.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\New-JarvisSignedEnvelope.ps1 -Kind update -OutputPath .\site\releases\jarvis-1.1.0\jarvis-1.1.0.update.json -Version 1.1.0 -ReleaseId jarvis-1.1.0 -PackagePath .\jarvis-1.1.0.zip -ValidDays 7
+
+# 2. Copy the package into place and record its hashes (also the manifest hash) in releases.json.
+Copy-Item .\jarvis-1.1.0.zip .\site\releases\jarvis-1.1.0\jarvis-1.1.0.zip
+(Get-FileHash .\jarvis-1.1.0.zip -Algorithm SHA256).Hash
+(Get-FileHash .\site\releases\jarvis-1.1.0\jarvis-1.1.0.update.json -Algorithm SHA256).Hash
+
+# 3. Sign the index (releases.json lists every published release).
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\private-channel\New-JarvisReleaseIndex.ps1 -OutputPath .\site\release-index.json -ReleasesJsonPath .\releases.json -ValidDays 7
+
+# 4. Publish site/ to the Pages branch (or the folder Pages is configured to serve) and push.
+```
+
+`releases.json` entry example:
+
+```json
+{
+  "version": "1.1.0",
+  "releaseId": "jarvis-1.1.0",
+  "envelopeUrl": "https://<user>.github.io/<repo>/releases/jarvis-1.1.0/jarvis-1.1.0.update.json",
+  "packageUrl": "https://<user>.github.io/<repo>/releases/jarvis-1.1.0/jarvis-1.1.0.zip",
+  "packageBytes": 12345,
+  "packageSha256": "PASTE_PACKAGE_SHA256",
+  "envelopeSha256": "PASTE_MANIFEST_SHA256",
+  "publishedAtUtc": "2026-08-15T00:00:00Z"
+}
+```
+
 ## Opt-in process hand-off and updater UI
 
 Hand-off stops the running JARVIS program, activates a verified update and restarts it. It is opt-in and never wired into the live launcher. The JARVIS core is identified as the process that owns the TCP listener on the port and whose command line references `<ProgramRoot>\ultra-server.mjs`; Pet/Sense are stopped only when their path is under the same program root. Nothing is ever killed by image name (`taskkill /IM node.exe` is forbidden), and an unattributable port owner causes a refusal.
@@ -105,7 +149,7 @@ Tests cover signature/key pinning, wrong install IDs, payload/package tampering,
 
 ## Next private-channel stage
 
-1. Choose the private HTTPS host/domain, publish the signed release index there and point the downloader at it.
+1. Create the GitHub repository, push `master`, enable GitHub Pages for the chosen folder/branch, publish the first signed release index and point the downloader at `https://<user>.github.io/<repo>/release-index.json`.
 2. Split the live install into a versioned program-only directory and a separate data directory, then wire hand-off into the launcher.
 3. Add remote monotonic release state if same-user malware rollback is in scope.
 4. Installer integration only after the main application is finished.
