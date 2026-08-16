@@ -1,20 +1,21 @@
 ﻿<#
 .SYNOPSIS
-  Ensures the JARVIS local brain (Ollama + qwen3:8b) is installed and running.
-  Runs automatically at first launch; the user does not configure anything.
+  Ensures the full JARVIS local brain is installed and running: Ollama, the
+  chat model (qwen3:8b) AND the vision models (qwen3-vl:4b-instruct for
+  watching, qwen3-vl:8b-instruct for actions). Runs automatically at first
+  launch; the user does not configure anything.
 
 .DESCRIPTION
-  Fast path: Ollama present, the model pulled and the local server answering on
+  Fast path: Ollama present, all models pulled and the local server answering on
   http://127.0.0.1:11434 -> exits 0 immediately. Slow path: download and silently
-  install Ollama, pull the model with live progress, then start the server.
-  Progress is printed to the console so the launcher window shows what is
-  happening. Never deletes anything and never touches the JARVIS program dir.
+  install Ollama, pull each missing model with live progress, then start the
+  server. Progress is printed to the console. Never deletes anything and never
+  touches the JARVIS program dir.
 #>
 [CmdletBinding()]
 param(
-    [string]$Model = 'qwen3:8b',
-    [int]$InstallTimeoutSeconds = 240,
-    [int]$PullTimeoutSeconds = 1800
+    [string[]]$Models = @('qwen3:8b', 'qwen3-vl:4b-instruct', 'qwen3-vl:8b-instruct'),
+    [int]$InstallTimeoutSeconds = 240
 )
 
 Set-StrictMode -Version Latest
@@ -61,7 +62,7 @@ Write-Output 'JARVIS: проверяю локальный мозг...'
 
 $ollamaExe = Find-OllamaExe
 if ($null -eq $ollamaExe) {
-    Write-Output "JARVIS: Ollama не найден. Скачиваю установщик (~700 МБ) — это один раз."
+    Write-Output 'JARVIS: Ollama не найден. Скачиваю установщик (~700 МБ) — это один раз.'
     $setupPath = Join-Path $env:TEMP 'OllamaSetup.exe'
     try {
         Invoke-WebRequest -Uri $OllamaUrl -OutFile $setupPath -UseBasicParsing
@@ -69,7 +70,7 @@ if ($null -eq $ollamaExe) {
         throw "Не удалось скачать Ollama: $($_.Exception.Message)"
     }
     Write-Output 'JARVIS: устанавливаю Ollama (тихо)...'
-    $setup = Start-Process -FilePath $setupPath -ArgumentList '/S' -PassThru -Wait
+    Start-Process -FilePath $setupPath -ArgumentList '/S' -Wait | Out-Null
     Remove-Item -LiteralPath $setupPath -Force -ErrorAction SilentlyContinue
 
     $deadline = [DateTime]::UtcNow.AddSeconds($InstallTimeoutSeconds)
@@ -82,10 +83,14 @@ if ($null -eq $ollamaExe) {
     }
 }
 
-if (-not (Test-ModelPulled -OllamaExe $ollamaExe -ModelName $Model)) {
-    Write-Output "JARVIS: скачиваю модель $Model (~5 ГБ). Это один раз, подождите."
-    & $ollamaExe pull $Model
-    if ($LASTEXITCODE -ne 0) { throw "Не удалось скачать модель $Model." }
+foreach ($model in $Models) {
+    if (-not (Test-ModelPulled -OllamaExe $ollamaExe -ModelName $model)) {
+        Write-Output "JARVIS: скачиваю модель $model. Это один раз, подождите (виден прогресс)."
+        & $ollamaExe pull $model
+        if ($LASTEXITCODE -ne 0) { throw "Не удалось скачать модель $model." }
+    } else {
+        Write-Output "JARVIS: модель $model уже на месте."
+    }
 }
 
 if (-not (Test-OllamaApi)) {
@@ -98,4 +103,4 @@ if (-not (Test-OllamaApi)) {
     if (-not (Test-OllamaApi)) { throw 'Локальный мозг не ответил на 127.0.0.1:11434.' }
 }
 
-Write-Output "JARVIS: мозг готов (Ollama + $Model)."
+Write-Output ('JARVIS: мозг готов (Ollama + ' + ($Models -join ', ') + ').')

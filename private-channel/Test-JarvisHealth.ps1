@@ -133,15 +133,17 @@ if ($coreUp) {
     Add-Check 'Сервер (порт ' + $Port + ')' $false 'не отвечает'
 }
 
-# --- Local brain (Ollama) ---
+# --- Local brain (Ollama + chat model + vision models) ---
 $ollamaUp = Test-HttpPort 11434
 if ($ollamaUp) {
     try {
         $tags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 3
         $modelNames = @($tags.models | ForEach-Object { [string]$_.name })
-        $hasQwen = @($modelNames | Where-Object { $_ -match 'qwen3:8b' }).Count -gt 0
+        $hasModel = { param($pattern) @($modelNames | Where-Object { $_ -match $pattern }).Count -gt 0 }
         Add-Check 'Мозг (Ollama)' $true ('моделей: ' + $modelNames.Count)
-        Add-Check 'Модель qwen3:8b' $hasQwen ($modelNames -join ', ')
+        Add-Check 'Модель qwen3:8b (чат)' (& $hasModel 'qwen3:8b') ($modelNames -join ', ')
+        Add-Check 'Модель qwen3-vl:4b (зрение)' (& $hasModel 'qwen3-vl:4b') ($modelNames -join ', ')
+        Add-Check 'Модель qwen3-vl:8b (действия)' (& $hasModel 'qwen3-vl:8b') ($modelNames -join ', ')
     } catch {
         Add-Check 'Мозг (Ollama)' $false $_.Exception.Message
     }

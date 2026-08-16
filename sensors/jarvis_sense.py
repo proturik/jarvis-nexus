@@ -51,8 +51,10 @@ LOCAL_TTS_PORT = 3793
 LOCAL_TTS_BODY_LIMIT = 24 * 1024
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "voiceEnabled": False,
-    "visionEnabled": False,
+    # Out-of-the-box: the wake word is always listening and screen analysis is on,
+    # so a fresh install works immediately without the user hunting for toggles.
+    "voiceEnabled": True,
+    "visionEnabled": True,
     "microphoneDevice": None,
     "visionIntervalSeconds": 30,
     "visionModel": DEFAULT_VISION_MODEL,
